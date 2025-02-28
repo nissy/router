@@ -5,16 +5,15 @@ import (
 )
 
 const (
-	initialTrieSize = 1024
-	growthFactor    = 1.5
-	// baseOffset を導入して、全体的なオフセットを確保する
-	baseOffset int32 = 256
+	initialTrieSize       = 1024
+	growthFactor          = 1.5
+	baseOffset      int32 = 256
 )
 
 type DoubleArrayTrie struct {
 	base    []int32
 	check   []int32
-	handler []HandlerFunc // 自作の HandlerFunc に統一
+	handler []HandlerFunc
 	size    int32
 	mu      sync.RWMutex
 }
@@ -26,17 +25,23 @@ func newDoubleArrayTrie() *DoubleArrayTrie {
 		handler: make([]HandlerFunc, initialTrieSize),
 		size:    1,
 	}
-	// ルートノード（index 0）の base を baseOffset に設定
+
 	t.base[0] = baseOffset
 	return t
 }
 
 func (t *DoubleArrayTrie) Add(path string, handler HandlerFunc) error {
 	if path == "" {
-		return &RouterError{Code: ErrInvalidPattern, Message: "empty path"}
+		return &RouterError{
+			Code:    ErrInvalidPattern,
+			Message: "empty path",
+		}
 	}
 	if handler == nil {
-		return &RouterError{Code: ErrNilHandler, Message: "nil handler"}
+		return &RouterError{
+			Code:    ErrNilHandler,
+			Message: "nil handler",
+		}
 	}
 
 	t.mu.Lock()
@@ -59,7 +64,7 @@ func (t *DoubleArrayTrie) Add(path string, handler HandlerFunc) error {
 				return &RouterError{Code: ErrInternalError, Message: "failed to find base value"}
 			}
 
-			t.base[curr] = baseCandidate // ここで追加のオフセットは不要
+			t.base[curr] = baseCandidate
 			next = t.base[curr] + int32(c)
 		}
 

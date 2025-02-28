@@ -11,29 +11,28 @@ import (
 type segmentType uint8
 
 const (
-	segStatic segmentType = iota
-	segParam
-	segRegex
+	segmentTypeStatic segmentType = iota
+	segmentTypeParam
+	segmentTypeRegex
 )
 
-// regexCache は正規表現の再コンパイルを防ぐグローバルキャッシュ
-var regexCache sync.Map // map[string]*regexp.Regexp
+var regexCache sync.Map
 
 // Node は動的ルート用 Radix ツリーのノード
 type Node struct {
-	prefix    string         // 静的部分の共通接頭辞
-	segType   segmentType    // segStatic, segParam, segRegex
-	paramName string         // パラメータノードの場合の名前
-	regex     *regexp.Regexp // segRegex 用のコンパイル済み正規表現
-	children  []*Node        // 子ノード
-	handler   HandlerFunc    // 自作の HandlerFunc を使用
+	prefix      string         // 静的部分の共通接頭辞
+	segmentType segmentType    // segmentTypeStatic, segmentTypeParam, segmentTypeRegex
+	paramName   string         // パラメータノードの場合の名前
+	regex       *regexp.Regexp // segmentTypeRegex 用のコンパイル済み正規表現
+	children    []*Node        // 子ノード
+	handler     HandlerFunc    // 自作の HandlerFunc を使用
 }
 
 func NewNode(prefix string) *Node {
 	return &Node{
-		prefix:   prefix,
-		segType:  segStatic,
-		children: make([]*Node, 0),
+		prefix:      prefix,
+		segmentType: segmentTypeStatic,
+		children:    make([]*Node, 0),
 	}
 }
 
@@ -61,7 +60,7 @@ func (n *Node) Match(path string, ps *Params) (HandlerFunc, bool) {
 
 func (n *Node) matchOne(path string, ps *Params) (HandlerFunc, bool) {
 	// 正規表現ノード
-	if n.segType == segRegex {
+	if n.segmentType == segmentTypeRegex {
 		part, remain := cutPath(path)
 		if !n.regex.MatchString(part) {
 			return nil, false
@@ -82,7 +81,7 @@ func (n *Node) matchOne(path string, ps *Params) (HandlerFunc, bool) {
 	}
 
 	// パラメータノード
-	if n.segType == segParam {
+	if n.segmentType == segmentTypeParam {
 		part, remain := cutPath(path)
 		ps.Add(n.paramName, part)
 		if remain == "" {
@@ -129,22 +128,22 @@ func (n *Node) matchOne(path string, ps *Params) (HandlerFunc, bool) {
 
 func (n *Node) insertSegment(st segmentType, param, rexp string) *Node {
 	// 動的ノードの場合（パラメータ / 正規表現）
-	if st != segStatic {
+	if st != segmentTypeStatic {
 		for _, child := range n.children {
-			if child.segType == st && child.paramName == param {
-				if st == segRegex && child.regex.String() == rexp {
+			if child.segmentType == st && child.paramName == param {
+				if st == segmentTypeRegex && child.regex.String() == rexp {
 					return child
-				} else if st != segRegex {
+				} else if st != segmentTypeRegex {
 					return child
 				}
 			}
 		}
 		newChild := &Node{
-			segType:   st,
-			paramName: param,
-			children:  make([]*Node, 0),
+			segmentType: st,
+			paramName:   param,
+			children:    make([]*Node, 0),
 		}
-		if st == segRegex {
+		if st == segmentTypeRegex {
 			if cached, ok := regexCache.Load(rexp); ok {
 				newChild.regex = cached.(*regexp.Regexp)
 			} else {
@@ -165,7 +164,7 @@ func (n *Node) insertSegment(st segmentType, param, rexp string) *Node {
 
 func (n *Node) insertStatic(seg string) *Node {
 	for _, child := range n.children {
-		if child.segType == segStatic {
+		if child.segmentType == segmentTypeStatic {
 			cp := longestCommonPrefix(child.prefix, seg)
 			if cp == "" {
 				continue
@@ -179,10 +178,10 @@ func (n *Node) insertStatic(seg string) *Node {
 			} else if cp == seg {
 				remainChild := child.prefix[len(cp):]
 				splitNode := &Node{
-					prefix:   remainChild,
-					segType:  segStatic,
-					handler:  child.handler,
-					children: child.children,
+					prefix:      remainChild,
+					segmentType: segmentTypeStatic,
+					handler:     child.handler,
+					children:    child.children,
 				}
 				child.prefix = cp
 				child.handler = nil
@@ -192,18 +191,18 @@ func (n *Node) insertStatic(seg string) *Node {
 				remainChild := child.prefix[len(cp):]
 				remainSeg := seg[len(cp):]
 				splitNode := &Node{
-					prefix:   remainChild,
-					segType:  segStatic,
-					handler:  child.handler,
-					children: child.children,
+					prefix:      remainChild,
+					segmentType: segmentTypeStatic,
+					handler:     child.handler,
+					children:    child.children,
 				}
 				child.prefix = cp
 				child.handler = nil
 				child.children = []*Node{splitNode}
 				if remainSeg != "" {
 					newNode := &Node{
-						prefix:  remainSeg,
-						segType: segStatic,
+						prefix:      remainSeg,
+						segmentType: segmentTypeStatic,
 					}
 					child.children = append(child.children, newNode)
 					return newNode
@@ -213,8 +212,8 @@ func (n *Node) insertStatic(seg string) *Node {
 		}
 	}
 	newChild := &Node{
-		prefix:  seg,
-		segType: segStatic,
+		prefix:      seg,
+		segmentType: segmentTypeStatic,
 	}
 	n.children = append(n.children, newChild)
 	return newChild
@@ -246,7 +245,7 @@ func longestCommonPrefix(a, b string) string {
 // ワイルドカード（先頭が '*'）はエラーを返します。
 func parseSegment(seg string) (segmentType, string, string, error) {
 	if seg == "" {
-		return segStatic, seg, "", nil
+		return segmentTypeStatic, seg, "", nil
 	}
 	if seg[0] == '*' {
 		return 0, "", "", fmt.Errorf("invalid wildcard usage: %q (wildcard '*' is not allowed)", seg)
@@ -262,10 +261,10 @@ func parseSegment(seg string) (segmentType, string, string, error) {
 			if !strings.HasSuffix(pattern, "$") {
 				pattern = pattern + "$"
 			}
-			return segRegex, content[:idx], pattern, nil
+			return segmentTypeRegex, content[:idx], pattern, nil
 		}
-		return segParam, content, "", nil
+		return segmentTypeParam, content, "", nil
 	}
 
-	return segStatic, seg, "", nil
+	return segmentTypeStatic, seg, "", nil
 }

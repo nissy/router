@@ -2,54 +2,44 @@ package router
 
 import (
 	"context"
-	"log"
 	"net/http"
 	"strings"
 	"sync"
 	"sync/atomic"
 )
 
-// HandlerFunc はエラーを返すハンドラ型です。
 type HandlerFunc func(http.ResponseWriter, *http.Request) error
-
-// MiddlewareFunc はミドルウェアチェーンで HandlerFunc をラップする型です。
 type MiddlewareFunc func(HandlerFunc) HandlerFunc
 
-// Router は静的ルートはダブルトライ、動的ルートは Radix ツリーで管理します。
 type Router struct {
-	staticTrie   *DoubleArrayTrie // 静的ルート用
-	dynamicNodes [8]*Node         // メソッドごとの動的ルート (Radix ツリー) ※ GET=1, POST=2, … (index = methodToUint8 - 1)
-	errHandler   func(http.ResponseWriter, *http.Request, error)
-	cache        *Cache       // キャッシュ
-	mw           atomic.Value // []MiddlewareFunc
+	staticTrie   *DoubleArrayTrie
+	dynamicNodes [8]*Node
+	errorHandler func(http.ResponseWriter, *http.Request, error)
+	cache        *Cache
+	mw           atomic.Value
 	mu           sync.RWMutex
 }
 
-// NewRouter は新しい Router を生成します。
 func NewRouter() *Router {
 	r := &Router{
-		staticTrie: newDoubleArrayTrie(),
-		cache:      newCache(),
-		errHandler: defaultErrorHandler,
+		staticTrie:   newDoubleArrayTrie(),
+		cache:        newCache(),
+		errorHandler: defaultErrorHandler,
 	}
 	r.mw.Store(make([]MiddlewareFunc, 0, 8))
-	// dynamicNodes は初期状態では nil（登録時に作成）
 	return r
 }
 
 func defaultErrorHandler(w http.ResponseWriter, r *http.Request, err error) {
-	log.Printf("Unhandled error: %v", err)
-	http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+	http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 }
 
-// SetErrorHandler はエラー時の共通ハンドラを設定します。
 func (r *Router) SetErrorHandler(h func(http.ResponseWriter, *http.Request, error)) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.errHandler = h
+	r.errorHandler = h
 }
 
-// Use はミドルウェアチェーンを追加します。
 func (r *Router) Use(mw ...MiddlewareFunc) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -61,7 +51,6 @@ func (r *Router) Use(mw ...MiddlewareFunc) {
 }
 
 func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
-	// リクエストパスも正規化
 	path := normalizePath(req.URL.Path)
 	handler, ok := r.match(req.Method, path)
 	if !ok {
@@ -71,13 +60,12 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	final := r.buildChain(handler)
 	if err := final(w, req); err != nil {
 		r.mu.RLock()
-		eh := r.errHandler
+		eh := r.errorHandler
 		r.mu.RUnlock()
 		eh(w, req, err)
 	}
 }
 
-// buildChain は登録されたミドルウェアでハンドラをラップします。
 func (r *Router) buildChain(final HandlerFunc) HandlerFunc {
 	m := r.mw.Load().([]MiddlewareFunc)
 	for i := len(m) - 1; i >= 0; i-- {
@@ -86,7 +74,6 @@ func (r *Router) buildChain(final HandlerFunc) HandlerFunc {
 	return final
 }
 
-// match は、キャッシュ、静的ルート、動的ルートの順でマッチングを行います。
 func (r *Router) match(method, path string) (HandlerFunc, bool) {
 	meth := methodToUint8(method)
 	if meth == 0 {

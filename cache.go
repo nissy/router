@@ -26,7 +26,7 @@ type cacheShard struct {
 }
 
 type cacheEntry struct {
-	handler   HandlerFunc // 自作の HandlerFunc に統一
+	handler   HandlerFunc
 	timestamp int64
 	hits      uint32
 }
