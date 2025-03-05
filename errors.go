@@ -2,6 +2,7 @@ package router
 
 import (
 	"fmt"
+	"net/http"
 	"unicode"
 )
 
@@ -40,7 +41,7 @@ func (c ErrorCode) String() string {
 
 func validateMethod(m string) error {
 	switch m {
-	case "GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS":
+	case http.MethodGet, http.MethodPost, http.MethodPut, http.MethodDelete, http.MethodPatch, http.MethodHead, http.MethodOptions:
 		return nil
 	default:
 		return &RouterError{Code: ErrInvalidMethod, Message: "unsupported method: " + m}

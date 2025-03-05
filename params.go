@@ -18,7 +18,7 @@ type paramEntry struct {
 }
 
 var paramsPool = sync.Pool{
-	New: func() interface{} {
+	New: func() any {
 		return &Params{}
 	},
 }
@@ -33,7 +33,7 @@ func PutParams(ps *Params) {
 }
 
 func (ps *Params) reset() {
-	for i := 0; i < ps.count; i++ {
+	for i := range ps.data[:ps.count] {
 		ps.data[i] = paramEntry{}
 	}
 	ps.count = 0
@@ -49,7 +49,7 @@ func (ps *Params) Add(key, val string) bool {
 }
 
 func (ps *Params) Get(key string) (string, bool) {
-	for i := 0; i < ps.count; i++ {
+	for i := range ps.data[:ps.count] {
 		if ps.data[i].key == key {
 			return ps.data[i].value, true
 		}

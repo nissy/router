@@ -338,7 +338,7 @@ func TestEmptyPattern(t *testing.T) {
 func TestMassRegistration(t *testing.T) {
 	r := router.NewRouter()
 	numRoutes := 100
-	for i := 0; i < numRoutes; i++ {
+	for i := range make([]struct{}, numRoutes) {
 		route := "/mass/" + strconv.Itoa(i)
 		expected := "mass:" + strconv.Itoa(i)
 		err := r.Get(route, func(expected string) router.HandlerFunc {
@@ -419,5 +419,32 @@ func TestOverlappingRoutes(t *testing.T) {
 	expected = "dynamic overlap:123"
 	if resp.StatusCode != http.StatusOK || strings.TrimSpace(string(body)) != expected {
 		t.Errorf("expected %q for /overlap/123, got %q (status %d)", expected, body, resp.StatusCode)
+	}
+}
+
+func TestQueryParams(t *testing.T) {
+	r := router.NewRouter()
+	err := r.Get("/search", func(w http.ResponseWriter, r *http.Request) error {
+		query := r.URL.Query()
+		term := query.Get("term")
+		_, err := w.Write([]byte("search term: " + term))
+		return err
+	})
+	if err != nil {
+		t.Fatalf("failed to register query param route: %v", err)
+	}
+
+	// クエリパラメータを含むリクエスト
+	req := httptest.NewRequest("GET", "/search?term=golang", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	resp := w.Result()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("failed to read response: %v", err)
+	}
+	expected := "search term: golang"
+	if resp.StatusCode != http.StatusOK || strings.TrimSpace(string(body)) != expected {
+		t.Errorf("expected %q, got %q (status %d)", expected, body, resp.StatusCode)
 	}
 }

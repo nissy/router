@@ -35,7 +35,7 @@ func newCache() *Cache {
 	c := &Cache{
 		stopChan: make(chan struct{}),
 	}
-	for i := 0; i < shardCount; i++ {
+	for i := range c.shards {
 		c.shards[i] = &cacheShard{
 			entries: make(map[uint64]*cacheEntry),
 		}
