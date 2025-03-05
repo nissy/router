@@ -31,7 +31,7 @@ const (
 func NewNode(pattern string) *Node {
 	n := &Node{
 		pattern:  pattern,
-		children: make([]*Node, 0, 8),
+		children: make([]*Node, 0, 8), // 初期容量を8に設定（一般的なケースで十分）
 	}
 	n.parseSegment()
 	return n
@@ -40,6 +40,7 @@ func NewNode(pattern string) *Node {
 // AddRoute はルートパターンとハンドラをツリーに追加します。
 // パスセグメントを順に処理し、必要に応じて新しいノードを作成します。
 func (n *Node) AddRoute(segments []string, handler HandlerFunc) error {
+	// 全セグメントを処理し終えた場合、現在のノードにハンドラを設定
 	if len(segments) == 0 {
 		if n.handler != nil {
 			return &RouterError{Code: ErrInvalidPattern, Message: "duplicate pattern"}
@@ -48,60 +49,78 @@ func (n *Node) AddRoute(segments []string, handler HandlerFunc) error {
 		return nil
 	}
 
-	seg := segments[0]
-	child := n.findChild(seg)
+	// 現在のセグメントを取得
+	currentSegment := segments[0]
+
+	// 既存の子ノードを探索
+	child := n.findChild(currentSegment)
+
+	// 子ノードが存在しない場合は新規作成
 	if child == nil {
-		child = NewNode(seg)
+		child = NewNode(currentSegment)
 		n.children = append(n.children, child)
 	}
+
+	// 残りのセグメントを再帰的に処理
 	return child.AddRoute(segments[1:], handler)
 }
 
 // Match はパスとパスセグメントを照合し、一致するハンドラとパラメータを返します。
 // 動的セグメントの場合、パラメータ値を抽出してParamsに格納します。
 func (n *Node) Match(path string, ps *Params) (HandlerFunc, bool) {
+	// パスの終端に到達した場合
 	if path == "" {
 		return n.handler, true
 	}
 
 	// パスの先頭のセグメントを抽出
-	var seg string
+	var currentSegment string
+	remainingPath := ""
+
+	// 次の「/」を探して現在のセグメントと残りのパスを分離
 	if idx := strings.IndexByte(path[1:], '/'); idx >= 0 {
-		seg = path[1 : idx+1]
+		currentSegment = path[1 : idx+1]
+		remainingPath = path[idx+1:]
 	} else {
-		seg = path[1:]
+		currentSegment = path[1:]
+		remainingPath = ""
 	}
 
-	// 子ノードを探索
+	// 子ノードを探索して一致するものを探す
 	for _, child := range n.children {
 		switch child.segType {
 		case segStatic:
 			// 静的セグメントは完全一致が必要
-			if child.pattern == seg {
-				if h, ok := child.Match(path[len(seg)+1:], ps); ok {
+			if child.pattern == currentSegment {
+				if h, ok := child.Match(remainingPath, ps); ok {
 					return h, true
 				}
 			}
 		case segParam:
 			// パラメータセグメントは値を抽出
-			ps.Add(child.pattern[1:len(child.pattern)-1], seg)
-			if h, ok := child.Match(path[len(seg)+1:], ps); ok {
+			paramName := child.pattern[1 : len(child.pattern)-1]
+			ps.Add(paramName, currentSegment)
+			if h, ok := child.Match(remainingPath, ps); ok {
 				return h, true
 			}
-			ps.reset()
+			ps.reset() // マッチしなかった場合はパラメータをリセット
 		case segRegex:
 			// 正規表現セグメントはパターンマッチを実行
-			if child.regex.MatchString(seg) {
-				name := child.pattern[1:strings.IndexByte(child.pattern, ':')]
-				ps.Add(name, seg)
-				if h, ok := child.Match(path[len(seg)+1:], ps); ok {
+			if child.regex.MatchString(currentSegment) {
+				// パラメータ名を抽出（{name:pattern}形式から）
+				colonIdx := strings.IndexByte(child.pattern, ':')
+				paramName := child.pattern[1:colonIdx]
+
+				ps.Add(paramName, currentSegment)
+				if h, ok := child.Match(remainingPath, ps); ok {
 					return h, true
 				}
-				ps.reset()
+				ps.reset() // マッチしなかった場合はパラメータをリセット
 			}
 		}
 	}
 
+	// 一致するハンドラが見つからなかった
 	return nil, false
 }
 
@@ -109,24 +128,30 @@ func (n *Node) Match(path string, ps *Params) (HandlerFunc, bool) {
 // また、正規表現セグメントの場合はregexpパターンをコンパイルします。
 func (n *Node) parseSegment() {
 	pattern := n.pattern
+
+	// 空のパターンは静的セグメント
 	if pattern == "" {
 		n.segType = segStatic
 		return
 	}
 
+	// パラメータ形式（{param}または{param:regex}）かチェック
 	if pattern[0] != '{' || pattern[len(pattern)-1] != '}' {
 		n.segType = segStatic
 		return
 	}
 
-	// 正規表現パターンの検出
-	if idx := strings.IndexByte(pattern, ':'); idx > 0 {
+	// 正規表現パターンの検出（{name:pattern}形式）
+	if colonIdx := strings.IndexByte(pattern, ':'); colonIdx > 0 {
 		n.segType = segRegex
-		regexStr := pattern[idx+1 : len(pattern)-1]
+		regexStr := pattern[colonIdx+1 : len(pattern)-1]
+
+		// 正規表現をコンパイル（^と$を自動追加して完全一致を保証）
 		n.regex = regexp.MustCompile("^" + regexStr + "$")
 		return
 	}
 
+	// 単純なパラメータ（{name}形式）
 	n.segType = segParam
 }
 

@@ -77,7 +77,7 @@ func BenchmarkMassRegistration(b *testing.B) {
 	r := router.NewRouter()
 	numRoutes := 1000
 	// 大量の静的ルートを登録
-	for i := 0; i < numRoutes; i++ {
+	for i := range make([]struct{}, numRoutes) {
 		route := "/mass/" + strconv.Itoa(i)
 		expected := "mass:" + strconv.Itoa(i)
 		err := r.Get(route, func(exp string) router.HandlerFunc {
