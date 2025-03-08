@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 // HandlerFunc はHTTPリクエストを処理し、エラーを返す関数型です。
@@ -17,16 +18,52 @@ type HandlerFunc func(http.ResponseWriter, *http.Request) error
 // リクエスト処理の前後に共通処理を挿入するために使用されます。
 type MiddlewareFunc func(HandlerFunc) HandlerFunc
 
+// CleanupMiddleware はクリーンアップ可能なミドルウェアのインターフェースです。
+type CleanupMiddleware interface {
+	Cleanup() error
+	Middleware() MiddlewareFunc
+}
+
+// cleanupMiddlewareImpl はCleanupMiddlewareインターフェースの実装です。
+type cleanupMiddlewareImpl struct {
+	mw      MiddlewareFunc
+	cleanup func() error
+}
+
+// Cleanup はCleanupMiddlewareインターフェースを実装します。
+func (c *cleanupMiddlewareImpl) Cleanup() error {
+	if c.cleanup != nil {
+		return c.cleanup()
+	}
+	return nil
+}
+
+// Middleware はCleanupMiddlewareインターフェースを実装します。
+func (c *cleanupMiddlewareImpl) Middleware() MiddlewareFunc {
+	return c.mw
+}
+
+// NewCleanupMiddleware は新しいCleanupMiddlewareを作成します。
+func NewCleanupMiddleware(mw MiddlewareFunc, cleanup func() error) CleanupMiddleware {
+	return &cleanupMiddlewareImpl{
+		mw:      mw,
+		cleanup: cleanup,
+	}
+}
+
 // Router はHTTPリクエストルーティングを管理する主要な構造体です。
 // 静的ルート（DoubleArrayTrie）と動的ルート（Radixツリー）の両方をサポートし、
 // 高速なルートマッチングとキャッシュ機構を提供します。
 type Router struct {
-	staticTrie   *DoubleArrayTrie                                // 静的ルート用の高速なトライ木構造
-	dynamicNodes [8]*Node                                        // HTTPメソッドごとの動的ルート用Radixツリー（インデックスはmethodToUint8に対応）
-	errorHandler func(http.ResponseWriter, *http.Request, error) // エラー発生時の処理関数
-	cache        *Cache                                          // ルートマッチングの結果をキャッシュし、パフォーマンスを向上
-	middleware   atomic.Value                                    // ミドルウェア関数のリスト（スレッドセーフな更新のためatomic.Value使用）
-	mu           sync.RWMutex                                    // 並行アクセスからの保護用ミューテックス
+	staticTrie     *DoubleArrayTrie                                // 静的ルート用の高速なトライ木構造
+	dynamicNodes   [8]*Node                                        // HTTPメソッドごとの動的ルート用Radixツリー（インデックスはmethodToUint8に対応）
+	errorHandler   func(http.ResponseWriter, *http.Request, error) // エラー発生時の処理関数
+	cache          *Cache                                          // ルートマッチングの結果をキャッシュし、パフォーマンスを向上
+	middleware     atomic.Value                                    // ミドルウェア関数のリスト（スレッドセーフな更新のためatomic.Value使用）
+	cleanupMws     atomic.Value                                    // クリーンアップ可能なミドルウェアのリスト
+	mu             sync.RWMutex                                    // 並行アクセスからの保護用ミューテックス
+	activeRequests sync.WaitGroup
+	shuttingDown   atomic.Bool
 }
 
 // NewRouter は新しいRouterインスタンスを初期化して返します。
@@ -39,6 +76,10 @@ func NewRouter() *Router {
 	}
 	// ミドルウェアリストを初期化（atomic.Valueを使用するため）
 	r.middleware.Store(make([]MiddlewareFunc, 0, 8))
+	// クリーンアップ可能なミドルウェアリストを初期化
+	r.cleanupMws.Store(make([]CleanupMiddleware, 0, 8))
+	// shuttingDownはデフォルトでfalseだが、明示的に設定
+	r.shuttingDown.Store(false)
 	return r
 }
 
@@ -75,10 +116,44 @@ func (r *Router) Use(mw ...MiddlewareFunc) {
 	r.middleware.Store(newMiddleware)
 }
 
+// UseWithCleanup はクリーンアップ可能なミドルウェアをルーターに追加します。
+// このミドルウェアはShutdownメソッドが呼ばれたときにクリーンアップされます。
+func (r *Router) UseWithCleanup(cm CleanupMiddleware) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	// 現在のミドルウェアリストを取得
+	currentMiddleware := r.middleware.Load().([]MiddlewareFunc)
+
+	// 新しいミドルウェアリストを作成（既存 + 新規）
+	newMiddleware := make([]MiddlewareFunc, len(currentMiddleware)+1)
+	copy(newMiddleware, currentMiddleware)
+	newMiddleware[len(currentMiddleware)] = cm.Middleware()
+
+	// アトミックに更新
+	r.middleware.Store(newMiddleware)
+
+	// クリーンアップリストに追加
+	currentCleanup := r.cleanupMws.Load().([]CleanupMiddleware)
+	newCleanup := make([]CleanupMiddleware, len(currentCleanup)+1)
+	copy(newCleanup, currentCleanup)
+	newCleanup[len(currentCleanup)] = cm
+
+	r.cleanupMws.Store(newCleanup)
+}
+
 // ServeHTTP はhttp.Handler interfaceを実装し、HTTPリクエストを処理します。
 // リクエストパスに一致するハンドラを検索し、見つかった場合はミドルウェアチェーンを
 // 適用してハンドラを実行します。エラーが発生した場合はエラーハンドラを呼び出します。
 func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
+	if r.shuttingDown.Load() {
+		http.Error(w, "Server is shutting down", http.StatusServiceUnavailable)
+		return
+	}
+
+	r.activeRequests.Add(1)
+	defer r.activeRequests.Done()
+
 	// パスを正規化（先頭に/を追加、末尾の/を削除）
 	path := normalizePath(req.URL.Path)
 
@@ -128,14 +203,23 @@ func (r *Router) match(method, path string) (HandlerFunc, bool) {
 
 	// キャッシュキーを生成し、キャッシュをチェック
 	cacheKey := generateRouteKey(methodIndex, path)
-	if handler, found := r.cache.Get(cacheKey); found {
+
+	if handler, paramMap, found := r.cache.GetWithParams(cacheKey); found {
+		if paramMap != nil {
+			// キャッシュからパラメータ情報を取得した場合
+			params := NewParams()
+			for k, v := range paramMap {
+				params.Add(k, v)
+			}
+			return wrapWithParams(handler, params), true
+		}
 		return handler, true
 	}
 
 	// 静的ルートを検索（高速なDoubleArrayTrieを使用）
 	if handler := r.staticTrie.Search(path); handler != nil {
-		// キャッシュに結果を保存
-		r.cache.Set(cacheKey, handler)
+		// キャッシュに結果を保存（静的ルートにはパラメータなし）
+		r.cache.Set(cacheKey, handler, nil)
 		return handler, true
 	}
 
@@ -151,12 +235,20 @@ func (r *Router) match(method, path string) (HandlerFunc, bool) {
 	handler, matched := node.Match(path, params)
 
 	if matched && handler != nil {
-		// キャッシュに結果を保存
-		r.cache.Set(cacheKey, handler)
-		// パラメータ付きのハンドラを返す
+		// パラメータ情報をマップに変換
+		paramMap := make(map[string]string)
+		for i := 0; i < params.count; i++ {
+			paramMap[params.data[i].key] = params.data[i].value
+		}
+
+		// キャッシュに結果を保存（パラメータ情報も含む）
+		r.cache.Set(cacheKey, handler, paramMap)
+
 		return wrapWithParams(handler, params), true
 	}
 
+	// マッチしなかった場合はパラメータをプールに返却
+	PutParams(params)
 	return nil, false
 }
 
@@ -344,4 +436,41 @@ func contextWithParams(ctx context.Context, ps *Params) context.Context {
 	return context.WithValue(ctx, paramsKey{}, ps)
 }
 
-// normalizePath はURLパスを正規化します。
+func (r *Router) Shutdown(ctx context.Context) error {
+	r.shuttingDown.Store(true)
+
+	// キャッシュを停止
+	r.cache.Stop()
+
+	// ミドルウェアのクリーンアップ
+	cleanupMws := r.cleanupMws.Load().([]CleanupMiddleware)
+	for _, cm := range cleanupMws {
+		if err := cm.Cleanup(); err != nil {
+			// エラーは無視して続行
+		}
+	}
+
+	// アクティブなリクエストの完了を待機
+	done := make(chan struct{})
+	go func() {
+		r.activeRequests.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (r *Router) ShutdownWithTimeout(timeout time.Duration) error {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	return r.Shutdown(ctx)
+}
+
+func (r *Router) ShutdownWithContext(ctx context.Context) error {
+	return r.Shutdown(ctx)
+}

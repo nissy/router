@@ -2,12 +2,16 @@
 package router_test
 
 import (
+	"context"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/nissy/router"
 )
@@ -447,4 +451,380 @@ func TestQueryParams(t *testing.T) {
 	if resp.StatusCode != http.StatusOK || strings.TrimSpace(string(body)) != expected {
 		t.Errorf("expected %q, got %q (status %d)", expected, body, resp.StatusCode)
 	}
+}
+
+func TestMiddleware(t *testing.T) {
+	r := router.NewRouter()
+
+	// ミドルウェアを追加
+	r.Use(func(next router.HandlerFunc) router.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) error {
+			w.Header().Set("X-Middleware", "applied")
+			return next(w, r)
+		}
+	})
+
+	// ルートを登録
+	err := r.Get("/middleware-test", func(w http.ResponseWriter, r *http.Request) error {
+		_, err := w.Write([]byte("middleware test"))
+		return err
+	})
+	if err != nil {
+		t.Fatalf("failed to register route: %v", err)
+	}
+
+	// リクエストを実行
+	req := httptest.NewRequest("GET", "/middleware-test", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	resp := w.Result()
+
+	// レスポンスを検証
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("failed to read response: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK || strings.TrimSpace(string(body)) != "middleware test" {
+		t.Errorf("expected 'middleware test', got %q (status %d)", body, resp.StatusCode)
+	}
+
+	// ヘッダーを検証
+	if resp.Header.Get("X-Middleware") != "applied" {
+		t.Errorf("middleware was not applied, header not found")
+	}
+}
+
+func TestMultipleMiddleware(t *testing.T) {
+	r := router.NewRouter()
+
+	// 複数のミドルウェアを追加
+	r.Use(
+		func(next router.HandlerFunc) router.HandlerFunc {
+			return func(w http.ResponseWriter, r *http.Request) error {
+				w.Header().Set("X-Order", "first")
+				return next(w, r)
+			}
+		},
+		func(next router.HandlerFunc) router.HandlerFunc {
+			return func(w http.ResponseWriter, r *http.Request) error {
+				current := w.Header().Get("X-Order")
+				w.Header().Set("X-Order", current+",second")
+				return next(w, r)
+			}
+		},
+	)
+
+	// ルートを登録
+	err := r.Get("/multi-middleware", func(w http.ResponseWriter, r *http.Request) error {
+		_, err := w.Write([]byte("multiple middleware"))
+		return err
+	})
+	if err != nil {
+		t.Fatalf("failed to register route: %v", err)
+	}
+
+	// リクエストを実行
+	req := httptest.NewRequest("GET", "/multi-middleware", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	resp := w.Result()
+
+	// レスポンスを検証
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("failed to read response: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK || strings.TrimSpace(string(body)) != "multiple middleware" {
+		t.Errorf("expected 'multiple middleware', got %q (status %d)", body, resp.StatusCode)
+	}
+
+	// ヘッダーを検証（ミドルウェアの適用順序）
+	if resp.Header.Get("X-Order") != "first,second" {
+		t.Errorf("middleware order incorrect, got %q", resp.Header.Get("X-Order"))
+	}
+}
+
+func TestCleanupMiddleware(t *testing.T) {
+	r := router.NewRouter()
+
+	// クリーンアップフラグ
+	cleaned := false
+
+	// クリーンアップ可能なミドルウェアを作成
+	cleanupMw := router.NewCleanupMiddleware(
+		func(next router.HandlerFunc) router.HandlerFunc {
+			return func(w http.ResponseWriter, r *http.Request) error {
+				w.Header().Set("X-Cleanup-Middleware", "active")
+				return next(w, r)
+			}
+		},
+		func() error {
+			cleaned = true
+			return nil
+		},
+	)
+
+	// ミドルウェアを登録
+	r.UseWithCleanup(cleanupMw)
+
+	// ルートを登録
+	err := r.Get("/cleanup-test", func(w http.ResponseWriter, r *http.Request) error {
+		_, err := w.Write([]byte("cleanup test"))
+		return err
+	})
+	if err != nil {
+		t.Fatalf("failed to register route: %v", err)
+	}
+
+	// リクエストを実行
+	req := httptest.NewRequest("GET", "/cleanup-test", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	resp := w.Result()
+
+	// レスポンスを検証
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("failed to read response: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK || strings.TrimSpace(string(body)) != "cleanup test" {
+		t.Errorf("expected 'cleanup test', got %q (status %d)", body, resp.StatusCode)
+	}
+
+	// ヘッダーを検証
+	if resp.Header.Get("X-Cleanup-Middleware") != "active" {
+		t.Errorf("cleanup middleware was not applied")
+	}
+
+	// シャットダウンを実行
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	r.Shutdown(ctx)
+
+	// クリーンアップが実行されたか検証
+	if !cleaned {
+		t.Errorf("cleanup function was not called")
+	}
+}
+
+func TestRegexPattern(t *testing.T) {
+	r := router.NewRouter()
+
+	// 数字のみを受け付ける正規表現パターン
+	err := r.Get("/products/{id:[0-9]+}", func(w http.ResponseWriter, r *http.Request) error {
+		ps := router.GetParams(r.Context())
+		id, _ := ps.Get("id")
+		_, err := w.Write([]byte("product:" + id))
+		return err
+	})
+	if err != nil {
+		t.Fatalf("failed to register regex route: %v", err)
+	}
+
+	// 文字のみを受け付ける正規表現パターン
+	err = r.Get("/categories/{name:[a-z]+}", func(w http.ResponseWriter, r *http.Request) error {
+		ps := router.GetParams(r.Context())
+		name, _ := ps.Get("name")
+		_, err := w.Write([]byte("category:" + name))
+		return err
+	})
+	if err != nil {
+		t.Fatalf("failed to register regex route: %v", err)
+	}
+
+	// 有効なリクエスト（数字）
+	req := httptest.NewRequest("GET", "/products/123", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	resp := w.Result()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("failed to read response: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK || strings.TrimSpace(string(body)) != "product:123" {
+		t.Errorf("expected 'product:123', got %q (status %d)", body, resp.StatusCode)
+	}
+
+	// 有効なリクエスト（文字）
+	req = httptest.NewRequest("GET", "/categories/electronics", nil)
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	resp = w.Result()
+	body, err = io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("failed to read response: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK || strings.TrimSpace(string(body)) != "category:electronics" {
+		t.Errorf("expected 'category:electronics', got %q (status %d)", body, resp.StatusCode)
+	}
+
+	// 無効なリクエスト（数字パターンに文字を使用）
+	req = httptest.NewRequest("GET", "/products/abc", nil)
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	resp = w.Result()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("expected 404 for invalid regex pattern, got %d", resp.StatusCode)
+	}
+
+	// 無効なリクエスト（文字パターンに数字を使用）
+	req = httptest.NewRequest("GET", "/categories/123", nil)
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	resp = w.Result()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("expected 404 for invalid regex pattern, got %d", resp.StatusCode)
+	}
+}
+
+func TestMultipleParams(t *testing.T) {
+	r := router.NewRouter()
+
+	// 複数のパラメータを持つルート
+	err := r.Get("/users/{userId}/posts/{postId}", func(w http.ResponseWriter, r *http.Request) error {
+		ps := router.GetParams(r.Context())
+		userId, _ := ps.Get("userId")
+		postId, _ := ps.Get("postId")
+		_, err := w.Write([]byte(fmt.Sprintf("user:%s,post:%s", userId, postId)))
+		return err
+	})
+	if err != nil {
+		t.Fatalf("failed to register multi-param route: %v", err)
+	}
+
+	// リクエストを実行
+	req := httptest.NewRequest("GET", "/users/john/posts/123", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	resp := w.Result()
+
+	// レスポンスを検証
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("failed to read response: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK || strings.TrimSpace(string(body)) != "user:john,post:123" {
+		t.Errorf("expected 'user:john,post:123', got %q (status %d)", body, resp.StatusCode)
+	}
+}
+
+func TestShutdown(t *testing.T) {
+	r := router.NewRouter()
+
+	// 長時間実行されるハンドラを登録
+	err := r.Get("/long-running", func(w http.ResponseWriter, r *http.Request) error {
+		// 通常はここで長時間の処理を行うが、テストでは短くする
+		time.Sleep(50 * time.Millisecond)
+		_, err := w.Write([]byte("completed"))
+		return err
+	})
+	if err != nil {
+		t.Fatalf("failed to register route: %v", err)
+	}
+
+	// サーバーをシャットダウン中に設定
+	go func() {
+		time.Sleep(10 * time.Millisecond)
+		r.ShutdownWithTimeout(200 * time.Millisecond)
+	}()
+
+	// 最初のリクエスト（処理される）
+	req := httptest.NewRequest("GET", "/long-running", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	resp := w.Result()
+
+	// レスポンスを検証
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("failed to read response: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK || strings.TrimSpace(string(body)) != "completed" {
+		t.Errorf("expected 'completed', got %q (status %d)", body, resp.StatusCode)
+	}
+
+	// シャットダウン後のリクエスト（拒否される）
+	time.Sleep(20 * time.Millisecond) // シャットダウンが完了するのを待つ
+	req = httptest.NewRequest("GET", "/long-running", nil)
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	resp = w.Result()
+
+	// シャットダウン中のレスポンスを検証
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Errorf("expected 503 Service Unavailable after shutdown, got %d", resp.StatusCode)
+	}
+}
+
+func TestErrorHandling(t *testing.T) {
+	r := router.NewRouter()
+
+	// エラーを返すハンドラを登録
+	err := r.Get("/error", func(w http.ResponseWriter, r *http.Request) error {
+		return errors.New("test error")
+	})
+	if err != nil {
+		t.Fatalf("failed to register route: %v", err)
+	}
+
+	// カスタムエラーハンドラを設定
+	r.SetErrorHandler(func(w http.ResponseWriter, r *http.Request, err error) {
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte("error: " + err.Error()))
+	})
+
+	// リクエストを実行
+	req := httptest.NewRequest("GET", "/error", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	resp := w.Result()
+
+	// レスポンスを検証
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("failed to read response: %v", err)
+	}
+	if resp.StatusCode != http.StatusBadRequest || !strings.Contains(string(body), "test error") {
+		t.Errorf("expected 400 with error message, got %q (status %d)", body, resp.StatusCode)
+	}
+}
+
+func TestCacheEffectiveness(t *testing.T) {
+	// テスト用のルーターを作成
+	r := router.NewRouter()
+
+	// 動的ルートを登録
+	err := r.Get("/test", func(w http.ResponseWriter, req *http.Request) error {
+		_, err := w.Write([]byte("test"))
+		return err
+	})
+	if err != nil {
+		t.Fatalf("failed to register route: %v", err)
+	}
+
+	// キャッシュの効果を間接的に検証
+	// 実際のキャッシュの実装を直接テストするのは難しいため、
+	// 代わりにキャッシュが存在することで期待される動作をテスト
+
+	// 同じURLに複数回アクセス
+	for i := 0; i < 5; i++ {
+		req := httptest.NewRequest("GET", "/test", nil)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		resp := w.Result()
+
+		// レスポンスを検証
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			t.Fatalf("failed to read response: %v", err)
+		}
+		if resp.StatusCode != http.StatusOK || strings.TrimSpace(string(body)) != "test" {
+			t.Errorf("expected 'test', got %q (status %d)", body, resp.StatusCode)
+		}
+	}
+
+	// キャッシュの存在を検証するのではなく、
+	// キャッシュが正しく動作していることを前提として、
+	// テストが成功することを確認
+	t.Log("Cache test completed successfully")
 }

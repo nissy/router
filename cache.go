@@ -29,6 +29,7 @@ type cacheEntry struct {
 	handler   HandlerFunc
 	timestamp int64
 	hits      uint32
+	params    map[string]string
 }
 
 func newCache() *Cache {
@@ -45,21 +46,15 @@ func newCache() *Cache {
 }
 
 func (c *Cache) Get(key uint64) (HandlerFunc, bool) {
-	sh := c.shards[key&shardMask]
-	sh.RLock()
-	e, ok := sh.entries[key]
-	sh.RUnlock()
-	if !ok {
-		return nil, false
-	}
-	atomic.StoreInt64(&e.timestamp, time.Now().UnixNano())
-	return e.handler, true
+	handler, _, found := c.GetWithParams(key)
+	return handler, found
 }
 
-func (c *Cache) Set(key uint64, h HandlerFunc) {
+func (c *Cache) Set(key uint64, h HandlerFunc, params map[string]string) {
 	if h == nil {
 		return
 	}
+
 	sh := c.shards[key&shardMask]
 	sh.Lock()
 	if len(sh.entries) >= maxEntriesPerShard {
@@ -77,8 +72,22 @@ func (c *Cache) Set(key uint64, h HandlerFunc) {
 		handler:   h,
 		timestamp: time.Now().UnixNano(),
 		hits:      0,
+		params:    params,
 	}
 	sh.Unlock()
+}
+
+func (c *Cache) GetWithParams(key uint64) (HandlerFunc, map[string]string, bool) {
+	sh := c.shards[key&shardMask]
+	sh.RLock()
+	e, ok := sh.entries[key]
+	sh.RUnlock()
+
+	if !ok {
+		return nil, nil, false
+	}
+	atomic.StoreInt64(&e.timestamp, time.Now().UnixNano())
+	return e.handler, e.params, true
 }
 
 func (c *Cache) cleanupLoop() {
