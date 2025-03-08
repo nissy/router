@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -55,25 +56,52 @@ func NewCleanupMiddleware(mw MiddlewareFunc, cleanup func() error) CleanupMiddle
 // 静的ルート（DoubleArrayTrie）と動的ルート（Radixツリー）の両方をサポートし、
 // 高速なルートマッチングとキャッシュ機構を提供します。
 type Router struct {
-	staticTrie     *DoubleArrayTrie                                // 静的ルート用の高速なトライ木構造
-	dynamicNodes   [8]*Node                                        // HTTPメソッドごとの動的ルート用Radixツリー（インデックスはmethodToUint8に対応）
-	errorHandler   func(http.ResponseWriter, *http.Request, error) // エラー発生時の処理関数
-	cache          *Cache                                          // ルートマッチングの結果をキャッシュし、パフォーマンスを向上
-	middleware     atomic.Value                                    // ミドルウェア関数のリスト（スレッドセーフな更新のためatomic.Value使用）
-	cleanupMws     atomic.Value                                    // クリーンアップ可能なミドルウェアのリスト
-	mu             sync.RWMutex                                    // 並行アクセスからの保護用ミューテックス
-	activeRequests sync.WaitGroup                                  // アクティブなリクエストの数を追跡
-	shuttingDown   atomic.Bool                                     // シャットダウン中かどうかを示すフラグ
-	wgMu           sync.Mutex                                      // activeRequestsへのアクセスを保護するミューテックス
+	// ルーティング関連
+	staticTrie   *DoubleArrayTrie // 静的ルート用の高速なトライ木構造
+	dynamicNodes [8]*Node         // HTTPメソッドごとの動的ルート用Radixツリー（インデックスはmethodToUint8に対応）
+	cache        *Cache           // ルートマッチングの結果をキャッシュし、パフォーマンスを向上
+	routes       []*Route         // 直接登録されたルート
+	groups       []*Group         // 登録されたグループ
+
+	// ハンドラ関連
+	errorHandler    func(http.ResponseWriter, *http.Request, error) // エラー発生時の処理関数
+	shutdownHandler http.HandlerFunc                                // シャットダウン中のリクエスト処理関数
+
+	// ミドルウェア関連
+	middleware atomic.Value // ミドルウェア関数のリスト（スレッドセーフな更新のためatomic.Value使用）
+	cleanupMws atomic.Value // クリーンアップ可能なミドルウェアのリスト
+
+	// 同期関連
+	mu             sync.RWMutex   // 並行アクセスからの保護用ミューテックス
+	activeRequests sync.WaitGroup // アクティブなリクエストの数を追跡
+	wgMu           sync.Mutex     // activeRequestsへのアクセスを保護するミューテックス
+	shuttingDown   atomic.Bool    // シャットダウン中かどうかを示すフラグ
+}
+
+// defaultErrorHandler はデフォルトのエラーハンドラで、
+// 内部サーバーエラー（500）を返します。
+func defaultErrorHandler(w http.ResponseWriter, r *http.Request, err error) {
+	http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+}
+
+// defaultShutdownHandler はデフォルトのシャットダウンハンドラで、
+// 503 Service Unavailableを返します。
+func defaultShutdownHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Connection", "close")
+	w.Header().Set("Retry-After", "60") // 60秒後に再試行を推奨
+	http.Error(w, "Server is shutting down", http.StatusServiceUnavailable)
 }
 
 // NewRouter は新しいRouterインスタンスを初期化して返します。
 // 静的ルート用のDoubleArrayTrieとキャッシュを初期化し、デフォルトのエラーハンドラを設定します。
 func NewRouter() *Router {
 	r := &Router{
-		staticTrie:   newDoubleArrayTrie(),
-		cache:        newCache(),
-		errorHandler: defaultErrorHandler,
+		staticTrie:      newDoubleArrayTrie(),
+		cache:           newCache(),
+		errorHandler:    defaultErrorHandler,
+		shutdownHandler: defaultShutdownHandler,
+		routes:          make([]*Route, 0),
+		groups:          make([]*Group, 0),
 	}
 	// ミドルウェアリストを初期化（atomic.Valueを使用するため）
 	r.middleware.Store(make([]MiddlewareFunc, 0, 8))
@@ -90,18 +118,20 @@ func NewRouter() *Router {
 	return r
 }
 
-// defaultErrorHandler はデフォルトのエラーハンドラで、
-// 内部サーバーエラー（500）を返します。
-func defaultErrorHandler(w http.ResponseWriter, r *http.Request, err error) {
-	http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
-}
-
 // SetErrorHandler はカスタムエラーハンドラを設定します。
 // これにより、アプリケーション固有のエラー処理を実装できます。
 func (r *Router) SetErrorHandler(h func(http.ResponseWriter, *http.Request, error)) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.errorHandler = h
+}
+
+// SetShutdownHandler はカスタムシャットダウンハンドラを設定します。
+// これにより、シャットダウン中のリクエスト処理をカスタマイズできます。
+func (r *Router) SetShutdownHandler(h http.HandlerFunc) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.shutdownHandler = h
 }
 
 // Use は1つ以上のミドルウェア関数をルーターに追加します。
@@ -152,12 +182,15 @@ func (r *Router) AddCleanupMiddleware(cm CleanupMiddleware) {
 // ServeHTTP はHTTPリクエストを処理します。ルートマッチングを行い、ミドルウェアを
 // 適用してハンドラを実行します。エラーが発生した場合はエラーハンドラを呼び出します。
 func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
-	// シャットダウン中の場合は503エラーを返す
+	// シャットダウン中の場合はシャットダウンハンドラを呼び出す
 	// atomic.Boolを使用しているため、読み取りは同期化されている
 	// シャットダウンフラグをローカル変数にコピーして、データ競合を防ぐ
 	isShuttingDown := r.shuttingDown.Load()
 	if isShuttingDown {
-		http.Error(w, "Server is shutting down", http.StatusServiceUnavailable)
+		r.mu.RLock()
+		shutdownHandler := r.shutdownHandler
+		r.mu.RUnlock()
+		shutdownHandler(w, req)
 		return
 	}
 
@@ -194,17 +227,11 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 }
 
 // buildMiddlewareChain はハンドラ関数にすべてのミドルウェアを適用し、
-// 最終的な実行チェーンを構築します。ミドルウェアは登録された順序の
-// 逆順で適用されます（最後に登録されたものが最初に実行）。
+// 最終的な実行チェーンを構築します。ミドルウェアは登録された順序で
+// 適用されます（最初に登録されたものが最初に実行）。
 func (r *Router) buildMiddlewareChain(final HandlerFunc) HandlerFunc {
 	middleware := r.middleware.Load().([]MiddlewareFunc)
-
-	// ミドルウェアを逆順に適用
-	for i := len(middleware) - 1; i >= 0; i-- {
-		final = middleware[i](final)
-	}
-
-	return final
+	return applyMiddlewareChain(final, middleware)
 }
 
 // findHandler はHTTPメソッドとパスに一致するハンドラ関数を検索します。
@@ -255,7 +282,7 @@ func (r *Router) findHandler(method, path string) (HandlerFunc, bool) {
 	if matched && handler != nil {
 		// パラメータ情報をマップに変換
 		paramMap := make(map[string]string)
-		for i := 0; i < params.count; i++ {
+		for i := 0; i < len(params.data); i++ {
 			paramMap[params.data[i].key] = params.data[i].value
 		}
 
@@ -289,6 +316,8 @@ func wrapHandlerWithParams(h HandlerFunc, ps *Params) HandlerFunc {
 // Handle は新しいルートを登録します。パターンが静的な場合はDoubleArrayTrieに、
 // 動的パラメータを含む場合はRadixツリーに登録します。
 // パターン、HTTPメソッド、ハンドラ関数の検証も行います。
+// 静的ルートと動的ルートが競合する場合は静的ルートが優先されます。
+// その他の重複パターン（同一パスの重複登録など）はエラーとなります。
 func (r *Router) Handle(method, pattern string, h HandlerFunc) error {
 	// パターンの検証
 	if pattern == "" {
@@ -312,16 +341,48 @@ func (r *Router) Handle(method, pattern string, h HandlerFunc) error {
 	// パターンをセグメントに分割し、静的か動的かを判断
 	methodIndex := methodToUint8(method)
 	segments := parseSegments(pattern)
+	isStatic := isAllStatic(segments)
 
-	// 静的ルートの場合はDoubleArrayTrieに登録
-	if isAllStatic(segments) {
-		return r.staticTrie.Add(pattern, h)
-	}
-
-	// 動的ルートの場合はRadixツリーに登録
+	// 重複チェック
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
+	// 静的ルートの場合
+	if isStatic {
+		// 静的ルートの重複チェック
+		existingHandler := r.staticTrie.Search(pattern)
+		if existingHandler != nil {
+			return &RouterError{Code: ErrInvalidPattern, Message: "duplicate static route: " + pattern}
+		}
+
+		// 動的ルートとの競合チェック
+		nodeIndex := methodIndex - 1
+		node := r.dynamicNodes[nodeIndex]
+		if node != nil {
+			params := NewParams()
+			existingHandler, matched := node.Match(pattern, params)
+			PutParams(params) // パラメータオブジェクトをプールに返却
+
+			// 動的ルートが既に存在する場合は、静的ルートを優先（エラーにしない）
+			if matched && existingHandler != nil {
+				// 静的ルートを登録（動的ルートを上書き）
+				return r.staticTrie.Add(pattern, h)
+			}
+		}
+
+		// 新しい静的ルートを登録
+		return r.staticTrie.Add(pattern, h)
+	}
+
+	// 動的ルートの場合
+	// 静的ルートとの競合チェック
+	existingHandler := r.staticTrie.Search(pattern)
+	if existingHandler != nil {
+		// 静的ルートが既に存在する場合は、動的ルートを登録しない（エラーを返す）
+		return &RouterError{Code: ErrInvalidPattern, Message: "route already registered as static route: " + pattern}
+	}
+
+	// 動的ルートの登録
 	nodeIndex := methodIndex - 1
 	node := r.dynamicNodes[nodeIndex]
 	if node == nil {
@@ -336,41 +397,6 @@ func (r *Router) Handle(method, pattern string, h HandlerFunc) error {
 	}
 
 	return nil
-}
-
-// Get はGETメソッドのルートを登録します。
-func (r *Router) Get(pattern string, h HandlerFunc) error {
-	return r.Handle(http.MethodGet, pattern, h)
-}
-
-// Post はPOSTメソッドのルートを登録します。
-func (r *Router) Post(pattern string, h HandlerFunc) error {
-	return r.Handle(http.MethodPost, pattern, h)
-}
-
-// Put はPUTメソッドのルートを登録します。
-func (r *Router) Put(pattern string, h HandlerFunc) error {
-	return r.Handle(http.MethodPut, pattern, h)
-}
-
-// Delete はDELETEメソッドのルートを登録します。
-func (r *Router) Delete(pattern string, h HandlerFunc) error {
-	return r.Handle(http.MethodDelete, pattern, h)
-}
-
-// Patch はPATCHメソッドのルートを登録します。
-func (r *Router) Patch(pattern string, h HandlerFunc) error {
-	return r.Handle(http.MethodPatch, pattern, h)
-}
-
-// Head はHEADメソッドのルートを登録します。
-func (r *Router) Head(pattern string, h HandlerFunc) error {
-	return r.Handle(http.MethodHead, pattern, h)
-}
-
-// Options はOPTIONSメソッドのルートを登録します。
-func (r *Router) Options(pattern string, h HandlerFunc) error {
-	return r.Handle(http.MethodOptions, pattern, h)
 }
 
 // parseSegments はURLパスを「/」で区切ってセグメントの配列に分割します。
@@ -416,7 +442,7 @@ func generateRouteKey(method uint8, path string) uint64 {
 	hash ^= uint64(method)
 	hash *= prime64
 
-	// パスの各文字をハッシュに組み込む
+	// パスの各バイトをハッシュに組み込む（文字列をバイトスライスに変換せずに直接アクセス）
 	for i := 0; i < len(path); i++ {
 		hash ^= uint64(path[i])
 		hash *= prime64
@@ -496,4 +522,187 @@ func (r *Router) ShutdownWithTimeoutContext(timeout time.Duration) error {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	return r.Shutdown(ctx)
+}
+
+// MustHandle はHandleメソッドのパニックバージョンです。
+// エラーが発生した場合はパニックを発生させます。
+func (r *Router) MustHandle(method, pattern string, h HandlerFunc) {
+	if err := r.Handle(method, pattern, h); err != nil {
+		panic(err)
+	}
+}
+
+// Route は新しいルートを作成しますが、まだ登録はしません。
+// 返されたRouteオブジェクトに対してWithMiddlewareを呼び出すことで、
+// 特定のミドルウェアを適用できます。
+func (r *Router) Route(method, pattern string, h HandlerFunc, middleware ...MiddlewareFunc) *Route {
+	// パスの正規化
+	pattern = normalizePath(pattern)
+
+	route := &Route{
+		group:      nil, // ルーターに直接登録されたルートはグループに属さない
+		router:     r,   // ルーターへの参照を設定
+		method:     method,
+		subPath:    pattern,
+		handler:    h,
+		middleware: make([]MiddlewareFunc, 0, len(middleware)),
+		applied:    false,
+	}
+
+	// ミドルウェアを追加
+	if len(middleware) > 0 {
+		route.middleware = append(route.middleware, middleware...)
+	}
+
+	// ルートをルーターに追加
+	r.routes = append(r.routes, route)
+
+	return route
+}
+
+// Get はGETメソッドのルートを作成します。
+// 返されたRouteオブジェクトに対してWithMiddlewareを呼び出すことで、
+// 特定のミドルウェアを適用できます。
+func (r *Router) Get(pattern string, h HandlerFunc, middleware ...MiddlewareFunc) *Route {
+	return r.Route(http.MethodGet, pattern, h, middleware...)
+}
+
+// Post はPOSTメソッドのルートを作成します。
+func (r *Router) Post(pattern string, h HandlerFunc, middleware ...MiddlewareFunc) *Route {
+	return r.Route(http.MethodPost, pattern, h, middleware...)
+}
+
+// Put はPUTメソッドのルートを作成します。
+func (r *Router) Put(pattern string, h HandlerFunc, middleware ...MiddlewareFunc) *Route {
+	return r.Route(http.MethodPut, pattern, h, middleware...)
+}
+
+// Delete はDELETEメソッドのルートを作成します。
+func (r *Router) Delete(pattern string, h HandlerFunc, middleware ...MiddlewareFunc) *Route {
+	return r.Route(http.MethodDelete, pattern, h, middleware...)
+}
+
+// Patch はPATCHメソッドのルートを作成します。
+func (r *Router) Patch(pattern string, h HandlerFunc, middleware ...MiddlewareFunc) *Route {
+	return r.Route(http.MethodPatch, pattern, h, middleware...)
+}
+
+// Head はHEADメソッドのルートを作成します。
+func (r *Router) Head(pattern string, h HandlerFunc, middleware ...MiddlewareFunc) *Route {
+	return r.Route(http.MethodHead, pattern, h, middleware...)
+}
+
+// Options はOPTIONSメソッドのルートを作成します。
+func (r *Router) Options(pattern string, h HandlerFunc, middleware ...MiddlewareFunc) *Route {
+	return r.Route(http.MethodOptions, pattern, h, middleware...)
+}
+
+// Build はすべてのルートを登録します。
+// このメソッドは明示的に呼び出す必要があります。
+// 重複するルートが検出された場合はエラーを返します。
+func (r *Router) Build() error {
+	routeCount := len(r.routes)
+	for _, group := range r.groups {
+		routeCount += len(group.routes)
+	}
+
+	// グローバルな重複チェック用のマップ（初期容量を設定）
+	globalRouteMap := make(map[string]string, routeCount)
+
+	// 直接登録されたルートの重複チェック（初期容量を設定）
+	routeMap := make(map[string]struct{}, len(r.routes))
+
+	// 直接登録されたルートを登録
+	for _, route := range r.routes {
+		if route.applied {
+			continue
+		}
+
+		// ルートキーを事前に生成（文字列連結を1回だけ実行）
+		routeKey := route.method + ":" + route.subPath
+
+		// ローカルな重複チェック
+		if _, exists := routeMap[routeKey]; exists {
+			return &RouterError{
+				Code:    ErrInvalidPattern,
+				Message: "duplicate route definition: " + route.method + " " + route.subPath,
+			}
+		}
+		routeMap[routeKey] = struct{}{}
+
+		// グローバルな重複チェック
+		if existingRoute, exists := globalRouteMap[routeKey]; exists {
+			return &RouterError{
+				Code:    ErrInvalidPattern,
+				Message: "duplicate route definition: " + route.method + " " + route.subPath + " (conflicts with " + existingRoute + ")",
+			}
+		}
+
+		// ルート情報を事前に生成（文字列連結を1回だけ実行）
+		routeInfo := "router:" + route.method + " " + route.subPath
+		globalRouteMap[routeKey] = routeInfo
+
+		// ミドルウェアをハンドラに適用
+		var handler HandlerFunc
+		if len(route.middleware) > 0 {
+			handler = applyMiddlewareChain(route.handler, route.middleware)
+		} else {
+			handler = route.handler
+		}
+
+		// ルートを登録
+		if err := r.Handle(route.method, route.subPath, handler); err != nil {
+			return err
+		}
+
+		route.applied = true
+	}
+
+	// すべてのグループのルートを登録
+	for i, group := range r.groups {
+		// グループ内のルートを収集して重複チェック
+		groupID := "group" + strconv.Itoa(i)
+		groupRoutes, err := r.collectGroupRoutes(group, globalRouteMap, groupID)
+		if err != nil {
+			return err
+		}
+
+		// グループのルートを登録
+		for _, route := range groupRoutes {
+			if err := route.build(); err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
+}
+
+// collectGroupRoutes はグループ内のすべてのルートを収集し、グローバルな重複チェックを行います。
+func (r *Router) collectGroupRoutes(group *Group, globalRouteMap map[string]string, groupID string) ([]*Route, error) {
+	var routes []*Route
+
+	// グループ内のルートを収集
+	for _, route := range group.routes {
+		if route.applied {
+			continue
+		}
+
+		// 完全なパスを計算
+		fullPath := joinPath(group.prefix, normalizePath(route.subPath))
+		routeKey := route.method + ":" + fullPath
+
+		// グローバルな重複チェック
+		if existingRoute, exists := globalRouteMap[routeKey]; exists {
+			return nil, &RouterError{
+				Code:    ErrInvalidPattern,
+				Message: "duplicate route definition: " + route.method + " " + fullPath + " (conflicts with " + existingRoute + ")",
+			}
+		}
+		globalRouteMap[routeKey] = groupID + ":" + route.method + " " + fullPath
+
+		routes = append(routes, route)
+	}
+
+	return routes, nil
 }

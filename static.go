@@ -41,6 +41,7 @@ func newDoubleArrayTrie() *DoubleArrayTrie {
 
 // Add は新しいパスとそのハンドラをトライ木に追加します。
 // パスを文字単位で分解し、各文字に対応するノードを作成または更新します。
+// 既に同じパスが登録されている場合はエラーを返します。
 func (t *DoubleArrayTrie) Add(path string, handler HandlerFunc) error {
 	// 入力検証
 	if path == "" {
@@ -58,6 +59,17 @@ func (t *DoubleArrayTrie) Add(path string, handler HandlerFunc) error {
 
 	t.mu.Lock()
 	defer t.mu.Unlock()
+
+	// 既存のパスかどうかをチェック
+	existingHandler := t.Search(path)
+	if existingHandler != nil {
+		// Router.Handle メソッドで既に重複チェックを行っているため、
+		// ここでのエラーは通常発生しないはずですが、安全のために実装しています。
+		return &RouterError{
+			Code:    ErrInvalidPattern,
+			Message: "duplicate static route: " + path,
+		}
+	}
 
 	// ルートノードから開始
 	currentNode := rootNode
