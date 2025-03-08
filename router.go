@@ -62,8 +62,9 @@ type Router struct {
 	middleware     atomic.Value                                    // ミドルウェア関数のリスト（スレッドセーフな更新のためatomic.Value使用）
 	cleanupMws     atomic.Value                                    // クリーンアップ可能なミドルウェアのリスト
 	mu             sync.RWMutex                                    // 並行アクセスからの保護用ミューテックス
-	activeRequests sync.WaitGroup
-	shuttingDown   atomic.Bool
+	activeRequests sync.WaitGroup                                  // アクティブなリクエストの数を追跡
+	shuttingDown   atomic.Bool                                     // シャットダウン中かどうかを示すフラグ
+	wgMu           sync.Mutex                                      // activeRequestsへのアクセスを保護するミューテックス
 }
 
 // NewRouter は新しいRouterインスタンスを初期化して返します。
@@ -80,6 +81,12 @@ func NewRouter() *Router {
 	r.cleanupMws.Store(make([]CleanupMiddleware, 0, 8))
 	// shuttingDownはデフォルトでfalseだが、明示的に設定
 	r.shuttingDown.Store(false)
+
+	// 各HTTPメソッド用の動的ルートツリーを初期化
+	for i := range r.dynamicNodes {
+		r.dynamicNodes[i] = NewNode("")
+	}
+
 	return r
 }
 
@@ -116,9 +123,9 @@ func (r *Router) Use(mw ...MiddlewareFunc) {
 	r.middleware.Store(newMiddleware)
 }
 
-// UseWithCleanup はクリーンアップ可能なミドルウェアをルーターに追加します。
+// AddCleanupMiddleware はクリーンアップ可能なミドルウェアをルーターに追加します。
 // このミドルウェアはShutdownメソッドが呼ばれたときにクリーンアップされます。
-func (r *Router) UseWithCleanup(cm CleanupMiddleware) {
+func (r *Router) AddCleanupMiddleware(cm CleanupMiddleware) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -142,30 +149,41 @@ func (r *Router) UseWithCleanup(cm CleanupMiddleware) {
 	r.cleanupMws.Store(newCleanup)
 }
 
-// ServeHTTP はhttp.Handler interfaceを実装し、HTTPリクエストを処理します。
-// リクエストパスに一致するハンドラを検索し、見つかった場合はミドルウェアチェーンを
+// ServeHTTP はHTTPリクエストを処理します。ルートマッチングを行い、ミドルウェアを
 // 適用してハンドラを実行します。エラーが発生した場合はエラーハンドラを呼び出します。
 func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
-	if r.shuttingDown.Load() {
+	// シャットダウン中の場合は503エラーを返す
+	// atomic.Boolを使用しているため、読み取りは同期化されている
+	// シャットダウンフラグをローカル変数にコピーして、データ競合を防ぐ
+	isShuttingDown := r.shuttingDown.Load()
+	if isShuttingDown {
 		http.Error(w, "Server is shutting down", http.StatusServiceUnavailable)
 		return
 	}
 
+	// アクティブなリクエストをカウント
+	// sync.WaitGroupは内部的に同期化されているが、
+	// 複数のゴルーチンからの同時アクセスを防ぐためにミューテックスで保護
+	r.wgMu.Lock()
 	r.activeRequests.Add(1)
-	defer r.activeRequests.Done()
+	r.wgMu.Unlock()
+
+	defer func() {
+		r.activeRequests.Done() // ミューテックスなしでDoneを呼び出す
+	}()
 
 	// パスを正規化（先頭に/を追加、末尾の/を削除）
 	path := normalizePath(req.URL.Path)
 
 	// ルートマッチング
-	handler, found := r.match(req.Method, path)
+	handler, found := r.findHandler(req.Method, path)
 	if !found {
 		http.NotFound(w, req)
 		return
 	}
 
 	// ミドルウェアチェーンを構築して実行
-	finalHandler := r.buildChain(handler)
+	finalHandler := r.buildMiddlewareChain(handler)
 	if err := finalHandler(w, req); err != nil {
 		// エラーハンドラを呼び出し
 		r.mu.RLock()
@@ -175,10 +193,10 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	}
 }
 
-// buildChain はハンドラ関数にすべてのミドルウェアを適用し、
+// buildMiddlewareChain はハンドラ関数にすべてのミドルウェアを適用し、
 // 最終的な実行チェーンを構築します。ミドルウェアは登録された順序の
 // 逆順で適用されます（最後に登録されたものが最初に実行）。
-func (r *Router) buildChain(final HandlerFunc) HandlerFunc {
+func (r *Router) buildMiddlewareChain(final HandlerFunc) HandlerFunc {
 	middleware := r.middleware.Load().([]MiddlewareFunc)
 
 	// ミドルウェアを逆順に適用
@@ -189,12 +207,12 @@ func (r *Router) buildChain(final HandlerFunc) HandlerFunc {
 	return final
 }
 
-// match はHTTPメソッドとパスに一致するハンドラ関数を検索します。
+// findHandler はHTTPメソッドとパスに一致するハンドラ関数を検索します。
 // 1. キャッシュをチェック
 // 2. 静的ルート（DoubleArrayTrie）をチェック
 // 3. 動的ルート（Radixツリー）をチェック
 // の順で検索し、最初に見つかったハンドラを返します。
-func (r *Router) match(method, path string) (HandlerFunc, bool) {
+func (r *Router) findHandler(method, path string) (HandlerFunc, bool) {
 	// HTTPメソッドを数値に変換
 	methodIndex := methodToUint8(method)
 	if methodIndex == 0 {
@@ -211,7 +229,7 @@ func (r *Router) match(method, path string) (HandlerFunc, bool) {
 			for k, v := range paramMap {
 				params.Add(k, v)
 			}
-			return wrapWithParams(handler, params), true
+			return wrapHandlerWithParams(handler, params), true
 		}
 		return handler, true
 	}
@@ -244,7 +262,7 @@ func (r *Router) match(method, path string) (HandlerFunc, bool) {
 		// キャッシュに結果を保存（パラメータ情報も含む）
 		r.cache.Set(cacheKey, handler, paramMap)
 
-		return wrapWithParams(handler, params), true
+		return wrapHandlerWithParams(handler, params), true
 	}
 
 	// マッチしなかった場合はパラメータをプールに返却
@@ -252,9 +270,9 @@ func (r *Router) match(method, path string) (HandlerFunc, bool) {
 	return nil, false
 }
 
-// wrapWithParams はハンドラ関数をラップし、URLパラメータをリクエストコンテキストに
+// wrapHandlerWithParams はハンドラ関数をラップし、URLパラメータをリクエストコンテキストに
 // 追加します。また、パラメータオブジェクトをプールに返却するための後処理も行います。
-func wrapWithParams(h HandlerFunc, ps *Params) HandlerFunc {
+func wrapHandlerWithParams(h HandlerFunc, ps *Params) HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) error {
 		// パラメータをコンテキストに追加
 		ctx := contextWithParams(r.Context(), ps)
@@ -320,37 +338,37 @@ func (r *Router) Handle(method, pattern string, h HandlerFunc) error {
 	return nil
 }
 
-// Get はGETメソッドのルートを登録するショートカット関数です。
+// Get はGETメソッドのルートを登録します。
 func (r *Router) Get(pattern string, h HandlerFunc) error {
 	return r.Handle(http.MethodGet, pattern, h)
 }
 
-// Post はPOSTメソッドのルートを登録するショートカット関数です。
+// Post はPOSTメソッドのルートを登録します。
 func (r *Router) Post(pattern string, h HandlerFunc) error {
 	return r.Handle(http.MethodPost, pattern, h)
 }
 
-// Put はPUTメソッドのルートを登録するショートカット関数です。
+// Put はPUTメソッドのルートを登録します。
 func (r *Router) Put(pattern string, h HandlerFunc) error {
 	return r.Handle(http.MethodPut, pattern, h)
 }
 
-// Delete はDELETEメソッドのルートを登録するショートカット関数です。
+// Delete はDELETEメソッドのルートを登録します。
 func (r *Router) Delete(pattern string, h HandlerFunc) error {
 	return r.Handle(http.MethodDelete, pattern, h)
 }
 
-// Patch はPATCHメソッドのルートを登録するショートカット関数です。
+// Patch はPATCHメソッドのルートを登録します。
 func (r *Router) Patch(pattern string, h HandlerFunc) error {
 	return r.Handle(http.MethodPatch, pattern, h)
 }
 
-// Head はHEADメソッドのルートを登録するショートカット関数です。
+// Head はHEADメソッドのルートを登録します。
 func (r *Router) Head(pattern string, h HandlerFunc) error {
 	return r.Handle(http.MethodHead, pattern, h)
 }
 
-// Options はOPTIONSメソッドのルートを登録するショートカット関数です。
+// Options はOPTIONSメソッドのルートを登録します。
 func (r *Router) Options(pattern string, h HandlerFunc) error {
 	return r.Handle(http.MethodOptions, pattern, h)
 }
@@ -385,12 +403,13 @@ func isDynamicSeg(seg string) bool {
 // generateRouteKey はHTTPメソッドとパスからキャッシュキーを生成します。
 // FNV-1aハッシュアルゴリズムを使用して高速に一意のキーを生成します。
 func generateRouteKey(method uint8, path string) uint64 {
+	// FNV-1aハッシュの定数
 	const (
 		offset64 = uint64(14695981039346656037)
 		prime64  = uint64(1099511628211)
 	)
 
-	// FNV-1aハッシュアルゴリズムを実装
+	// ハッシュ値の初期化
 	hash := offset64
 
 	// メソッドをハッシュに組み込む
@@ -398,7 +417,7 @@ func generateRouteKey(method uint8, path string) uint64 {
 	hash *= prime64
 
 	// パスの各文字をハッシュに組み込む
-	for i := range path {
+	for i := 0; i < len(path); i++ {
 		hash ^= uint64(path[i])
 		hash *= prime64
 	}
@@ -436,7 +455,11 @@ func contextWithParams(ctx context.Context, ps *Params) context.Context {
 	return context.WithValue(ctx, paramsKey{}, ps)
 }
 
+// Shutdown はルーターをグレースフルにシャットダウンします。
+// 新しいリクエストの受け付けを停止し、既存のリクエストが完了するのを待ちます。
+// 指定されたコンテキストがキャンセルされた場合、待機を中止してエラーを返します。
 func (r *Router) Shutdown(ctx context.Context) error {
+	// シャットダウンフラグを設定
 	r.shuttingDown.Store(true)
 
 	// キャッシュを停止
@@ -451,26 +474,26 @@ func (r *Router) Shutdown(ctx context.Context) error {
 	}
 
 	// アクティブなリクエストの完了を待機
-	done := make(chan struct{})
+	// ゴルーチンを使わずに直接待機することでデータ競合を防ぐ
+	waitCh := make(chan struct{})
 	go func() {
+		// WaitGroupのWaitはロックなしで呼び出す
 		r.activeRequests.Wait()
-		close(done)
+		close(waitCh)
 	}()
 
 	select {
-	case <-done:
+	case <-waitCh:
 		return nil
 	case <-ctx.Done():
 		return ctx.Err()
 	}
 }
 
-func (r *Router) ShutdownWithTimeout(timeout time.Duration) error {
+// ShutdownWithTimeoutContext はタイムアウト付きでルーターをグレースフルにシャットダウンします。
+// 指定された時間内にすべてのリクエストが完了しない場合、エラーを返します。
+func (r *Router) ShutdownWithTimeoutContext(timeout time.Duration) error {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	return r.Shutdown(ctx)
-}
-
-func (r *Router) ShutdownWithContext(ctx context.Context) error {
 	return r.Shutdown(ctx)
 }

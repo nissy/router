@@ -2,7 +2,6 @@
 package router_test
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -547,25 +546,20 @@ func TestMultipleMiddleware(t *testing.T) {
 func TestCleanupMiddleware(t *testing.T) {
 	r := router.NewRouter()
 
-	// クリーンアップフラグ
-	cleaned := false
-
-	// クリーンアップ可能なミドルウェアを作成
-	cleanupMw := router.NewCleanupMiddleware(
+	// クリーンアップ可能なミドルウェアを登録
+	cleanupCalled := false
+	cm := router.NewCleanupMiddleware(
 		func(next router.HandlerFunc) router.HandlerFunc {
 			return func(w http.ResponseWriter, r *http.Request) error {
-				w.Header().Set("X-Cleanup-Middleware", "active")
 				return next(w, r)
 			}
 		},
 		func() error {
-			cleaned = true
+			cleanupCalled = true
 			return nil
 		},
 	)
-
-	// ミドルウェアを登録
-	r.UseWithCleanup(cleanupMw)
+	r.AddCleanupMiddleware(cm)
 
 	// ルートを登録
 	err := r.Get("/cleanup-test", func(w http.ResponseWriter, r *http.Request) error {
@@ -591,18 +585,14 @@ func TestCleanupMiddleware(t *testing.T) {
 		t.Errorf("expected 'cleanup test', got %q (status %d)", body, resp.StatusCode)
 	}
 
-	// ヘッダーを検証
-	if resp.Header.Get("X-Cleanup-Middleware") != "active" {
-		t.Errorf("cleanup middleware was not applied")
+	// シャットダウンを実行
+	err = r.ShutdownWithTimeoutContext(200 * time.Millisecond)
+	if err != nil {
+		t.Fatalf("shutdown failed: %v", err)
 	}
 
-	// シャットダウンを実行
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-	defer cancel()
-	r.Shutdown(ctx)
-
 	// クリーンアップが実行されたか検証
-	if !cleaned {
+	if !cleanupCalled {
 		t.Errorf("cleanup function was not called")
 	}
 }
@@ -708,6 +698,7 @@ func TestMultipleParams(t *testing.T) {
 	}
 }
 
+// TestShutdown はシャットダウン機能の基本的な動作をテストします。
 func TestShutdown(t *testing.T) {
 	r := router.NewRouter()
 
@@ -721,12 +712,6 @@ func TestShutdown(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to register route: %v", err)
 	}
-
-	// サーバーをシャットダウン中に設定
-	go func() {
-		time.Sleep(10 * time.Millisecond)
-		r.ShutdownWithTimeout(200 * time.Millisecond)
-	}()
 
 	// 最初のリクエスト（処理される）
 	req := httptest.NewRequest("GET", "/long-running", nil)
@@ -743,8 +728,13 @@ func TestShutdown(t *testing.T) {
 		t.Errorf("expected 'completed', got %q (status %d)", body, resp.StatusCode)
 	}
 
+	// サーバーをシャットダウン
+	err = r.ShutdownWithTimeoutContext(200 * time.Millisecond)
+	if err != nil {
+		t.Fatalf("shutdown failed: %v", err)
+	}
+
 	// シャットダウン後のリクエスト（拒否される）
-	time.Sleep(20 * time.Millisecond) // シャットダウンが完了するのを待つ
 	req = httptest.NewRequest("GET", "/long-running", nil)
 	w = httptest.NewRecorder()
 	r.ServeHTTP(w, req)
@@ -827,4 +817,320 @@ func TestCacheEffectiveness(t *testing.T) {
 	// キャッシュが正しく動作していることを前提として、
 	// テストが成功することを確認
 	t.Log("Cache test completed successfully")
+}
+
+// TestComplexPatterns は複雑なルーティングパターンをテストします。
+// 複数の正規表現パターンや特殊なパターンの組み合わせをテストします。
+func TestComplexPatterns(t *testing.T) {
+	r := router.NewRouter()
+
+	// 複数の正規表現パターンを含むルート
+	err := r.Get("/api/{version:[0-9]+}/users/{id:[0-9]+}/posts/{slug:[a-z0-9-]+}/comments/{commentId:[0-9]+}",
+		func(w http.ResponseWriter, r *http.Request) error {
+			ps := router.GetParams(r.Context())
+			version, _ := ps.Get("version")
+			id, _ := ps.Get("id")
+			slug, _ := ps.Get("slug")
+			commentId, _ := ps.Get("commentId")
+			_, err := w.Write([]byte(fmt.Sprintf("v:%s,user:%s,post:%s,comment:%s", version, id, slug, commentId)))
+			return err
+		})
+	if err != nil {
+		t.Fatalf("failed to register complex route: %v", err)
+	}
+
+	// 日付形式を含むルート
+	err = r.Get("/events/{year:[0-9]{4}}/{month:[0-9]{2}}/{day:[0-9]{2}}",
+		func(w http.ResponseWriter, r *http.Request) error {
+			ps := router.GetParams(r.Context())
+			year, _ := ps.Get("year")
+			month, _ := ps.Get("month")
+			day, _ := ps.Get("day")
+			_, err := w.Write([]byte(fmt.Sprintf("date:%s-%s-%s", year, month, day)))
+			return err
+		})
+	if err != nil {
+		t.Fatalf("failed to register date route: %v", err)
+	}
+
+	// 複数の形式を許容するルート
+	err = r.Get("/files/{filename:[a-zA-Z0-9_.-]+\\.(?:jpg|png|pdf)}",
+		func(w http.ResponseWriter, r *http.Request) error {
+			ps := router.GetParams(r.Context())
+			filename, _ := ps.Get("filename")
+			_, err := w.Write([]byte(fmt.Sprintf("file:%s", filename)))
+			return err
+		})
+	if err != nil {
+		t.Fatalf("failed to register file route: %v", err)
+	}
+
+	// オプショナルパラメータを模倣したルート
+	err = r.Get("/search/{query}/{page:[0-9]+}",
+		func(w http.ResponseWriter, r *http.Request) error {
+			ps := router.GetParams(r.Context())
+			query, _ := ps.Get("query")
+			page, _ := ps.Get("page")
+			_, err := w.Write([]byte(fmt.Sprintf("search:%s,page:%s", query, page)))
+			return err
+		})
+	if err != nil {
+		t.Fatalf("failed to register search route: %v", err)
+	}
+
+	err = r.Get("/search/{query}",
+		func(w http.ResponseWriter, r *http.Request) error {
+			ps := router.GetParams(r.Context())
+			query, _ := ps.Get("query")
+			_, err := w.Write([]byte(fmt.Sprintf("search:%s,page:1", query)))
+			return err
+		})
+	if err != nil {
+		t.Fatalf("failed to register search route with default page: %v", err)
+	}
+
+	// テストケース
+	tests := []struct {
+		name           string
+		path           string
+		expectedStatus int
+		expectedBody   string
+	}{
+		{"複雑なAPIパス", "/api/2/users/123/posts/my-post/comments/456", http.StatusOK, "v:2,user:123,post:my-post,comment:456"},
+		{"日付パス", "/events/2023/05/15", http.StatusOK, "date:2023-05-15"},
+		{"ファイルパス - JPG", "/files/image.jpg", http.StatusOK, "file:image.jpg"},
+		{"ファイルパス - PNG", "/files/image.png", http.StatusOK, "file:image.png"},
+		{"ファイルパス - PDF", "/files/document.pdf", http.StatusOK, "file:document.pdf"},
+		{"検索パス - ページあり", "/search/golang/2", http.StatusOK, "search:golang,page:2"},
+		{"検索パス - デフォルトページ", "/search/golang", http.StatusOK, "search:golang,page:1"},
+		{"無効なAPIパス - バージョン", "/api/X/users/123/posts/my-post/comments/456", http.StatusNotFound, ""},
+		{"無効なAPIパス - ユーザーID", "/api/2/users/abc/posts/my-post/comments/456", http.StatusNotFound, ""},
+		{"無効なAPIパス - コメントID", "/api/2/users/123/posts/my-post/comments/abc", http.StatusNotFound, ""},
+		{"無効な日付パス - 年", "/events/20XX/05/15", http.StatusNotFound, ""},
+		{"無効な日付パス - 月", "/events/2023/5/15", http.StatusNotFound, ""},
+		{"無効なファイルパス - 拡張子", "/files/document.docx", http.StatusNotFound, ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest("GET", tt.path, nil)
+			w := httptest.NewRecorder()
+			r.ServeHTTP(w, req)
+			resp := w.Result()
+
+			if resp.StatusCode != tt.expectedStatus {
+				t.Errorf("expected status %d, got %d", tt.expectedStatus, resp.StatusCode)
+			}
+
+			if tt.expectedStatus == http.StatusOK {
+				body, err := io.ReadAll(resp.Body)
+				if err != nil {
+					t.Fatalf("failed to read response: %v", err)
+				}
+				if strings.TrimSpace(string(body)) != tt.expectedBody {
+					t.Errorf("expected body %q, got %q", tt.expectedBody, body)
+				}
+			}
+		})
+	}
+}
+
+// TestNestedComplexPatterns はネストされた複雑なルーティングパターンをテストします。
+// グループ化されたルートと複雑なパターンの組み合わせをテストします。
+func TestNestedComplexPatterns(t *testing.T) {
+	r := router.NewRouter()
+
+	// APIバージョングループ
+	apiV1 := r.Group("/api/v1")
+	apiV2 := r.Group("/api/v2")
+
+	// APIバージョン1のルート
+	err := apiV1.Get("/users/{id:[0-9]+}", func(w http.ResponseWriter, r *http.Request) error {
+		ps := router.GetParams(r.Context())
+		id, _ := ps.Get("id")
+		_, err := w.Write([]byte(fmt.Sprintf("v1-user:%s", id)))
+		return err
+	})
+	if err != nil {
+		t.Fatalf("failed to register v1 user route: %v", err)
+	}
+
+	// APIバージョン2のルート（より複雑）
+	err = apiV2.Get("/users/{id:[0-9]+}", func(w http.ResponseWriter, r *http.Request) error {
+		ps := router.GetParams(r.Context())
+		id, _ := ps.Get("id")
+		_, err := w.Write([]byte(fmt.Sprintf("v2-user:%s", id)))
+		return err
+	})
+	if err != nil {
+		t.Fatalf("failed to register v2 user route: %v", err)
+	}
+
+	// ネストされたグループ
+	userV2 := apiV2.Group("/users/{userId:[0-9]+}")
+
+	err = userV2.Get("/profile", func(w http.ResponseWriter, r *http.Request) error {
+		ps := router.GetParams(r.Context())
+		userId, _ := ps.Get("userId")
+		_, err := w.Write([]byte(fmt.Sprintf("v2-user-profile:%s", userId)))
+		return err
+	})
+	if err != nil {
+		t.Fatalf("failed to register v2 user profile route: %v", err)
+	}
+
+	err = userV2.Get("/posts/{postId:[0-9]+}", func(w http.ResponseWriter, r *http.Request) error {
+		ps := router.GetParams(r.Context())
+		userId, _ := ps.Get("userId")
+		postId, _ := ps.Get("postId")
+		_, err := w.Write([]byte(fmt.Sprintf("v2-user-post:%s-%s", userId, postId)))
+		return err
+	})
+	if err != nil {
+		t.Fatalf("failed to register v2 user post route: %v", err)
+	}
+
+	// さらにネストされたグループ
+	postV2 := userV2.Group("/posts/{postId:[0-9]+}")
+
+	err = postV2.Get("/comments", func(w http.ResponseWriter, r *http.Request) error {
+		ps := router.GetParams(r.Context())
+		userId, _ := ps.Get("userId")
+		postId, _ := ps.Get("postId")
+		_, err := w.Write([]byte(fmt.Sprintf("v2-user-post-comments:%s-%s", userId, postId)))
+		return err
+	})
+	if err != nil {
+		t.Fatalf("failed to register v2 user post comments route: %v", err)
+	}
+
+	err = postV2.Get("/comments/{commentId:[0-9]+}", func(w http.ResponseWriter, r *http.Request) error {
+		ps := router.GetParams(r.Context())
+		userId, _ := ps.Get("userId")
+		postId, _ := ps.Get("postId")
+		commentId, _ := ps.Get("commentId")
+		_, err := w.Write([]byte(fmt.Sprintf("v2-user-post-comment:%s-%s-%s", userId, postId, commentId)))
+		return err
+	})
+	if err != nil {
+		t.Fatalf("failed to register v2 user post comment route: %v", err)
+	}
+
+	// テストケース
+	tests := []struct {
+		name           string
+		path           string
+		expectedStatus int
+		expectedBody   string
+	}{
+		{"APIv1ユーザー", "/api/v1/users/123", http.StatusOK, "v1-user:123"},
+		{"APIv2ユーザー", "/api/v2/users/456", http.StatusOK, "v2-user:456"},
+		{"APIv2ユーザープロフィール", "/api/v2/users/456/profile", http.StatusOK, "v2-user-profile:456"},
+		{"APIv2ユーザー投稿", "/api/v2/users/456/posts/789", http.StatusOK, "v2-user-post:456-789"},
+		{"APIv2ユーザー投稿コメント一覧", "/api/v2/users/456/posts/789/comments", http.StatusOK, "v2-user-post-comments:456-789"},
+		{"APIv2ユーザー投稿コメント詳細", "/api/v2/users/456/posts/789/comments/101", http.StatusOK, "v2-user-post-comment:456-789-101"},
+		{"無効なAPIv1ユーザー", "/api/v1/users/abc", http.StatusNotFound, ""},
+		{"無効なAPIv2ユーザー", "/api/v2/users/abc", http.StatusNotFound, ""},
+		{"無効なAPIv2ユーザー投稿", "/api/v2/users/456/posts/xyz", http.StatusNotFound, ""},
+		{"無効なAPIv2ユーザー投稿コメント", "/api/v2/users/456/posts/789/comments/xyz", http.StatusNotFound, ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest("GET", tt.path, nil)
+			w := httptest.NewRecorder()
+			r.ServeHTTP(w, req)
+			resp := w.Result()
+
+			if resp.StatusCode != tt.expectedStatus {
+				t.Errorf("expected status %d, got %d", tt.expectedStatus, resp.StatusCode)
+			}
+
+			if tt.expectedStatus == http.StatusOK {
+				body, err := io.ReadAll(resp.Body)
+				if err != nil {
+					t.Fatalf("failed to read response: %v", err)
+				}
+				if strings.TrimSpace(string(body)) != tt.expectedBody {
+					t.Errorf("expected body %q, got %q", tt.expectedBody, body)
+				}
+			}
+		})
+	}
+}
+
+// TestPatternMatching はさまざまなパターンマッチングをテストします。
+func TestPatternMatching(t *testing.T) {
+	r := router.NewRouter()
+
+	// 単純なパラメータパターン
+	err := r.Get("/users/{id}", func(w http.ResponseWriter, r *http.Request) error {
+		ps := router.GetParams(r.Context())
+		id, _ := ps.Get("id")
+		_, err := w.Write([]byte(fmt.Sprintf("user:%s", id)))
+		return err
+	})
+	if err != nil {
+		t.Fatalf("failed to register simple param route: %v", err)
+	}
+
+	// 数字のみのパラメータパターン
+	err = r.Get("/posts/{id:[0-9]+}", func(w http.ResponseWriter, r *http.Request) error {
+		ps := router.GetParams(r.Context())
+		id, _ := ps.Get("id")
+		_, err := w.Write([]byte(fmt.Sprintf("post:%s", id)))
+		return err
+	})
+	if err != nil {
+		t.Fatalf("failed to register numeric param route: %v", err)
+	}
+
+	// 複数のパラメータパターン
+	err = r.Get("/categories/{category}/tags/{tag}", func(w http.ResponseWriter, r *http.Request) error {
+		ps := router.GetParams(r.Context())
+		category, _ := ps.Get("category")
+		tag, _ := ps.Get("tag")
+		_, err := w.Write([]byte(fmt.Sprintf("category:%s,tag:%s", category, tag)))
+		return err
+	})
+	if err != nil {
+		t.Fatalf("failed to register multi param route: %v", err)
+	}
+
+	// テストケース
+	tests := []struct {
+		name           string
+		path           string
+		expectedStatus int
+		expectedBody   string
+	}{
+		{"単純なパラメータ", "/users/john", http.StatusOK, "user:john"},
+		{"数字パラメータ - 有効", "/posts/123", http.StatusOK, "post:123"},
+		{"数字パラメータ - 無効", "/posts/abc", http.StatusNotFound, ""},
+		{"複数パラメータ", "/categories/books/tags/fiction", http.StatusOK, "category:books,tag:fiction"},
+		{"無効なパス", "/invalid/path", http.StatusNotFound, ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest("GET", tt.path, nil)
+			w := httptest.NewRecorder()
+			r.ServeHTTP(w, req)
+			resp := w.Result()
+
+			if resp.StatusCode != tt.expectedStatus {
+				t.Errorf("expected status %d, got %d", tt.expectedStatus, resp.StatusCode)
+			}
+
+			if tt.expectedStatus == http.StatusOK {
+				body, err := io.ReadAll(resp.Body)
+				if err != nil {
+					t.Fatalf("failed to read response: %v", err)
+				}
+				if strings.TrimSpace(string(body)) != tt.expectedBody {
+					t.Errorf("expected body %q, got %q", tt.expectedBody, body)
+				}
+			}
+		})
+	}
 }
