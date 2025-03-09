@@ -6,150 +6,150 @@ import (
 	"time"
 )
 
-// TestCacheCreation はキャッシュの作成をテストします
+// TestCacheCreation tests the creation of a cache
 func TestCacheCreation(t *testing.T) {
-	// 新しいキャッシュを作成
+	// Create a new cache
 	cache := newCache()
 
-	// 初期状態をチェック
+	// Check initial state
 	if cache == nil {
-		t.Fatalf("キャッシュの作成に失敗しました")
+		t.Fatalf("Failed to create cache")
 	}
 
 	for i := 0; i < shardCount; i++ {
 		if cache.shards[i] == nil {
-			t.Errorf("シャード %d が初期化されていません", i)
+			t.Errorf("Shard %d is not initialized", i)
 		}
 
 		if cache.shards[i].entries == nil {
-			t.Errorf("シャード %d のエントリーマップが初期化されていません", i)
+			t.Errorf("Entry map for shard %d is not initialized", i)
 		}
 	}
 
-	// キャッシュを停止
+	// Stop the cache
 	cache.Stop()
 }
 
-// TestCacheSetAndGet はキャッシュの設定と取得をテストします
+// TestCacheSetAndGet tests setting and getting from the cache
 func TestCacheSetAndGet(t *testing.T) {
-	// 新しいキャッシュを作成
+	// Create a new cache
 	cache := newCache()
 	defer cache.Stop()
 
-	// テスト用のハンドラ関数
+	// Test handler function
 	handler := func(w http.ResponseWriter, r *http.Request) error {
 		return nil
 	}
 
-	// キャッシュにエントリーを設定
+	// Set an entry in the cache
 	key := uint64(12345)
 	cache.Set(key, handler, nil)
 
-	// キャッシュからエントリーを取得
+	// Get the entry from the cache
 	h, found := cache.Get(key)
 
-	// 取得結果をチェック
+	// Check the result
 	if !found {
-		t.Fatalf("キャッシュからエントリーが見つかりませんでした")
+		t.Fatalf("Entry not found in cache")
 	}
 
 	if h == nil {
-		t.Errorf("キャッシュから取得したハンドラがnilです")
+		t.Errorf("Handler retrieved from cache is nil")
 	}
 }
 
-// TestCacheWithParams はパラメータ付きのキャッシュをテストします
+// TestCacheWithParams tests cache with parameters
 func TestCacheWithParams(t *testing.T) {
-	// 新しいキャッシュを作成
+	// Create a new cache
 	cache := newCache()
 	defer cache.Stop()
 
-	// テスト用のハンドラ関数
+	// Test handler function
 	handler := func(w http.ResponseWriter, r *http.Request) error {
 		return nil
 	}
 
-	// テスト用のパラメータ
+	// Test parameters
 	params := map[string]string{
 		"id":   "123",
 		"name": "test",
 	}
 
-	// キャッシュにエントリーを設定
+	// Set an entry in the cache
 	key := uint64(12345)
 	cache.Set(key, handler, params)
 
-	// キャッシュからエントリーを取得
+	// Get the entry from the cache
 	h, p, found := cache.GetWithParams(key)
 
-	// 取得結果をチェック
+	// Check the result
 	if !found {
-		t.Fatalf("キャッシュからエントリーが見つかりませんでした")
+		t.Fatalf("Entry not found in cache")
 	}
 
 	if h == nil {
-		t.Errorf("キャッシュから取得したハンドラがnilです")
+		t.Errorf("Handler retrieved from cache is nil")
 	}
 
 	if p == nil {
-		t.Errorf("キャッシュから取得したパラメータがnilです")
+		t.Errorf("Parameters retrieved from cache are nil")
 	}
 
-	// パラメータの値をチェック
+	// Check parameter values
 	if p["id"] != "123" {
-		t.Errorf("パラメータ id の値が異なります。期待値: %s, 実際: %s", "123", p["id"])
+		t.Errorf("Value of parameter id is different. Expected: %s, Actual: %s", "123", p["id"])
 	}
 
 	if p["name"] != "test" {
-		t.Errorf("パラメータ name の値が異なります。期待値: %s, 実際: %s", "test", p["name"])
+		t.Errorf("Value of parameter name is different. Expected: %s, Actual: %s", "test", p["name"])
 	}
 }
 
-// TestCacheMaxEntries はキャッシュの最大エントリー数をテストします
+// TestCacheMaxEntries tests the maximum number of entries in the cache
 func TestCacheMaxEntries(t *testing.T) {
-	// 新しいキャッシュを作成
+	// Create a new cache
 	cache := newCache()
 	defer cache.Stop()
 
-	// テスト用のハンドラ関数
+	// Test handler function
 	handler := func(w http.ResponseWriter, r *http.Request) error {
 		return nil
 	}
 
-	// 最大エントリー数を超えるエントリーを設定
-	shardIndex := uint64(0) // 特定のシャードにエントリーを集中させる
+	// Set entries exceeding the maximum number
+	shardIndex := uint64(0) // Concentrate entries in a specific shard
 	for i := uint64(0); i < maxEntriesPerShard+10; i++ {
-		key := (i << 3) | shardIndex // シャードインデックスを固定
+		key := (i << 3) | shardIndex // Fix shard index
 		cache.Set(key, handler, nil)
 	}
 
-	// シャードのエントリー数をチェック
+	// Check the number of entries in the shard
 	shard := cache.shards[shardIndex]
 	shard.RLock()
 	entriesCount := len(shard.entries)
 	shard.RUnlock()
 
 	if entriesCount > maxEntriesPerShard {
-		t.Errorf("シャードのエントリー数が最大値を超えています。最大値: %d, 実際: %d", maxEntriesPerShard, entriesCount)
+		t.Errorf("Number of entries in the shard exceeds the maximum. Maximum: %d, Actual: %d", maxEntriesPerShard, entriesCount)
 	}
 }
 
-// TestCacheCleanup はキャッシュのクリーンアップをテストします
+// TestCacheCleanup tests cache cleanup
 func TestCacheCleanup(t *testing.T) {
-	// 新しいキャッシュを作成
+	// Create a new cache
 	cache := newCache()
 	defer cache.Stop()
 
-	// テスト用のハンドラ関数
+	// Test handler function
 	handler := func(w http.ResponseWriter, r *http.Request) error {
 		return nil
 	}
 
-	// キャッシュにエントリーを設定
+	// Set an entry in the cache
 	key := uint64(12345)
 	cache.Set(key, handler, nil)
 
-	// エントリーのタイムスタンプを過去に設定
+	// Set the entry's timestamp to the past
 	shard := cache.shards[key&shardMask]
 	shard.Lock()
 	entry := shard.entries[key]
@@ -158,58 +158,58 @@ func TestCacheCleanup(t *testing.T) {
 	}
 	shard.Unlock()
 
-	// 手動でクリーンアップを実行
+	// Manually execute cleanup
 	cache.cleanup()
 
-	// エントリーが削除されていることを確認
+	// Verify that the entry has been removed
 	_, found := cache.Get(key)
 	if found {
-		t.Errorf("期限切れのエントリーがクリーンアップされていません")
+		t.Errorf("Expired entry was not cleaned up")
 	}
 }
 
-// TestCacheHits はキャッシュヒットをテストします
+// TestCacheHits tests cache hits
 func TestCacheHits(t *testing.T) {
-	// 新しいキャッシュを作成
+	// Create a new cache
 	cache := newCache()
 	defer cache.Stop()
 
-	// テスト用のハンドラ関数
+	// Test handler function
 	handler := func(w http.ResponseWriter, r *http.Request) error {
 		return nil
 	}
 
-	// キャッシュにエントリーを設定
+	// Set an entry in the cache
 	key := uint64(12345)
 	cache.Set(key, handler, nil)
 
-	// キャッシュからエントリーを複数回取得
+	// Get the entry from the cache multiple times
 	for i := 0; i < 5; i++ {
 		h, found := cache.Get(key)
 		if !found || h == nil {
-			t.Fatalf("キャッシュからエントリーが見つかりませんでした")
+			t.Fatalf("Entry not found in cache")
 		}
 	}
 
-	// ヒット数のチェックはスキップ（実装によってはヒット数をカウントしていない可能性がある）
+	// Skip checking hit count (implementation may not count hits)
 }
 
-// TestCacheTimestamp はキャッシュのタイムスタンプ更新をテストします
+// TestCacheTimestamp tests cache timestamp updates
 func TestCacheTimestamp(t *testing.T) {
-	// 新しいキャッシュを作成
+	// Create a new cache
 	cache := newCache()
 	defer cache.Stop()
 
-	// テスト用のハンドラ関数
+	// Test handler function
 	handler := func(w http.ResponseWriter, r *http.Request) error {
 		return nil
 	}
 
-	// キャッシュにエントリーを設定
+	// Set an entry in the cache
 	key := uint64(12345)
 	cache.Set(key, handler, nil)
 
-	// 初期タイムスタンプを取得
+	// Get the initial timestamp
 	shard := cache.shards[key&shardMask]
 	shard.RLock()
 	entry := shard.entries[key]
@@ -219,13 +219,13 @@ func TestCacheTimestamp(t *testing.T) {
 	}
 	shard.RUnlock()
 
-	// 少し待機
+	// Wait a bit
 	time.Sleep(10 * time.Millisecond)
 
-	// キャッシュからエントリーを取得
+	// Get the entry from the cache
 	cache.Get(key)
 
-	// 最終タイムスタンプを取得
+	// Get the final timestamp
 	shard.RLock()
 	entry = shard.entries[key]
 	finalTimestamp := int64(0)
@@ -234,8 +234,8 @@ func TestCacheTimestamp(t *testing.T) {
 	}
 	shard.RUnlock()
 
-	// タイムスタンプが更新されていることを確認
+	// Verify that the timestamp has been updated
 	if finalTimestamp <= initialTimestamp {
-		t.Errorf("キャッシュタイムスタンプが更新されていません。初期: %d, 最終: %d", initialTimestamp, finalTimestamp)
+		t.Errorf("Cache timestamp was not updated. Initial: %d, Final: %d", initialTimestamp, finalTimestamp)
 	}
 }

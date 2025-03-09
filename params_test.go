@@ -5,172 +5,172 @@ import (
 	"testing"
 )
 
-// TestParamsCreation はParamsの作成をテストします
+// TestParamsCreation tests the creation of Params
 func TestParamsCreation(t *testing.T) {
-	// 新しいParamsを作成
+	// Create a new Params
 	params := NewParams()
 
-	// 初期状態をチェック
+	// Check initial state
 	if params == nil {
-		t.Fatalf("Paramsの作成に失敗しました")
+		t.Fatalf("Failed to create Params")
 	}
 
 	if params.Len() != 0 {
-		t.Errorf("Paramsの初期サイズが異なります。期待値: %d, 実際: %d", 0, params.Len())
+		t.Errorf("Initial size of Params is different. Expected: %d, Actual: %d", 0, params.Len())
 	}
 
-	// パラメータをプールに返却
+	// Return parameters to the pool
 	PutParams(params)
 }
 
-// TestParamsAddAndGet はパラメータの追加と取得をテストします
+// TestParamsAddAndGet tests adding and retrieving parameters
 func TestParamsAddAndGet(t *testing.T) {
-	// 新しいParamsを作成
+	// Create a new Params
 	params := NewParams()
 
-	// パラメータを追加
+	// Add parameters
 	params.Add("id", "123")
 	params.Add("name", "test")
 
-	// パラメータの数をチェック
+	// Check the number of parameters
 	if params.Len() != 2 {
-		t.Errorf("パラメータの数が異なります。期待値: %d, 実際: %d", 2, params.Len())
+		t.Errorf("Number of parameters is different. Expected: %d, Actual: %d", 2, params.Len())
 	}
 
-	// パラメータの値をチェック
+	// Check parameter values
 	if val, ok := params.Get("id"); !ok || val != "123" {
-		t.Errorf("パラメータ id の値が異なります。期待値: %s, 実際: %s", "123", val)
+		t.Errorf("Value of parameter id is different. Expected: %s, Actual: %s", "123", val)
 	}
 
 	if val, ok := params.Get("name"); !ok || val != "test" {
-		t.Errorf("パラメータ name の値が異なります。期待値: %s, 実際: %s", "test", val)
+		t.Errorf("Value of parameter name is different. Expected: %s, Actual: %s", "test", val)
 	}
 
-	// 存在しないパラメータをチェック
+	// Check non-existent parameter
 	if _, ok := params.Get("notfound"); ok {
-		t.Errorf("存在しないパラメータが見つかりました")
+		t.Errorf("Found a non-existent parameter")
 	}
 
-	// パラメータをプールに返却
+	// Return parameters to the pool
 	PutParams(params)
 }
 
-// TestParamsReset はパラメータのリセットをテストします
+// TestParamsReset tests resetting parameters
 func TestParamsReset(t *testing.T) {
-	// 新しいParamsを作成
+	// Create a new Params
 	params := NewParams()
 
-	// パラメータを追加
+	// Add parameters
 	params.Add("id", "123")
 	params.Add("name", "test")
 
-	// パラメータの数をチェック
+	// Check the number of parameters
 	if params.Len() != 2 {
-		t.Errorf("パラメータの数が異なります。期待値: %d, 実際: %d", 2, params.Len())
+		t.Errorf("Number of parameters is different. Expected: %d, Actual: %d", 2, params.Len())
 	}
 
-	// パラメータをリセット
+	// Reset parameters
 	params.reset()
 
-	// リセット後のパラメータの数をチェック
+	// Check the number of parameters after reset
 	if params.Len() != 0 {
-		t.Errorf("リセット後のパラメータの数が異なります。期待値: %d, 実際: %d", 0, params.Len())
+		t.Errorf("Number of parameters after reset is different. Expected: %d, Actual: %d", 0, params.Len())
 	}
 
-	// パラメータをプールに返却
+	// Return parameters to the pool
 	PutParams(params)
 }
 
-// TestParamsPool はパラメータプールをテストします
+// TestParamsPool tests the parameter pool
 func TestParamsPool(t *testing.T) {
-	// 複数のParamsを作成して返却
+	// Create and return multiple Params
 	for range make([]struct{}, 10) {
 		params := NewParams()
 		params.Add("id", "123")
 		PutParams(params)
 	}
 
-	// プールから再利用されたParamsを取得
+	// Get a reused Params from the pool
 	params := NewParams()
 
-	// 再利用されたParamsが空であることを確認
+	// Verify that the reused Params is empty
 	if params.Len() != 0 {
-		t.Errorf("再利用されたParamsが空ではありません。サイズ: %d", params.Len())
+		t.Errorf("Reused Params is not empty. Size: %d", params.Len())
 	}
 
-	// パラメータをプールに返却
+	// Return parameters to the pool
 	PutParams(params)
 }
 
-// TestParamsCapacity はパラメータの容量をテストします
+// TestParamsCapacity tests the capacity of parameters
 func TestParamsCapacity(t *testing.T) {
-	// 新しいParamsを作成
+	// Create a new Params
 	params := NewParams()
 
-	// 多数のパラメータを追加
+	// Add many parameters
 	for i := 0; i < 100; i++ {
 		params.Add("key"+string(rune('0'+i%10)), "value"+string(rune('0'+i%10)))
 	}
 
-	// パラメータの数をチェック
+	// Check the number of parameters
 	if params.Len() != 100 {
-		t.Errorf("パラメータの数が異なります。期待値: %d, 実際: %d", 100, params.Len())
+		t.Errorf("Number of parameters is different. Expected: %d, Actual: %d", 100, params.Len())
 	}
 
-	// パラメータをプールに返却
+	// Return parameters to the pool
 	PutParams(params)
 }
 
-// TestContextWithParams はコンテキストにパラメータを追加するテストです
+// TestContextWithParams tests adding parameters to context
 func TestContextWithParams(t *testing.T) {
-	// 新しいParamsを作成
+	// Create a new Params
 	params := NewParams()
 	params.Add("id", "123")
 
-	// コンテキストにパラメータを追加
+	// Add parameters to context
 	ctx := context.Background()
 	ctx = contextWithParams(ctx, params)
 
-	// コンテキストからパラメータを取得
+	// Get parameters from context
 	retrievedParams := GetParams(ctx)
 
-	// パラメータをチェック
+	// Check parameters
 	if retrievedParams == nil {
-		t.Fatalf("コンテキストからパラメータを取得できませんでした")
+		t.Fatalf("Failed to retrieve parameters from context")
 	}
 
 	if val, ok := retrievedParams.Get("id"); !ok || val != "123" {
-		t.Errorf("パラメータ id の値が異なります。期待値: %s, 実際: %s", "123", val)
+		t.Errorf("Value of parameter id is different. Expected: %s, Actual: %s", "123", val)
 	}
 }
 
-// TestGetParamsWithNilContext はnilコンテキストからのパラメータ取得をテストします
+// TestGetParamsWithNilContext tests retrieving parameters from a nil context
 func TestGetParamsWithNilContext(t *testing.T) {
-	// nilコンテキストの代わりにcontext.TODO()を使用
+	// Use context.TODO() instead of nil context
 	params := GetParams(context.TODO())
 
-	// パラメータが新しく作成されていることを確認
+	// Verify that parameters are newly created
 	if params == nil {
-		t.Fatalf("空のコンテキストからパラメータを取得できませんでした")
+		t.Fatalf("Failed to retrieve parameters from empty context")
 	}
 
 	if params.Len() != 0 {
-		t.Errorf("新しく作成されたパラメータが空ではありません。サイズ: %d", params.Len())
+		t.Errorf("Newly created parameters are not empty. Size: %d", params.Len())
 	}
 }
 
-// TestGetParamsWithEmptyContext は空のコンテキストからのパラメータ取得をテストします
+// TestGetParamsWithEmptyContext tests retrieving parameters from an empty context
 func TestGetParamsWithEmptyContext(t *testing.T) {
-	// 空のコンテキストからパラメータを取得
+	// Get parameters from an empty context
 	ctx := context.Background()
 	params := GetParams(ctx)
 
-	// パラメータが新しく作成されていることを確認
+	// Verify that parameters are newly created
 	if params == nil {
-		t.Fatalf("空のコンテキストからパラメータを取得できませんでした")
+		t.Fatalf("Failed to retrieve parameters from empty context")
 	}
 
 	if params.Len() != 0 {
-		t.Errorf("新しく作成されたパラメータが空ではありません。サイズ: %d", params.Len())
+		t.Errorf("Newly created parameters are not empty. Size: %d", params.Len())
 	}
 }

@@ -13,15 +13,15 @@ import (
 	"time"
 )
 
-// responseWriter はhttp.ResponseWriterを拡張し、レスポンスの書き込み状態を追跡します。
+// responseWriter is an extension of http.ResponseWriter that tracks the write status of the response.
 type responseWriter struct {
 	http.ResponseWriter
 	written bool
 	status  int
 }
 
-// WriteHeader はHTTPステータスコードを設定します。
-// 既にレスポンスが書き込まれている場合は何もしません。
+// WriteHeader sets the HTTP status code.
+// It does nothing if the response has already been written.
 func (rw *responseWriter) WriteHeader(code int) {
 	if !rw.written {
 		rw.status = code
@@ -30,8 +30,8 @@ func (rw *responseWriter) WriteHeader(code int) {
 	}
 }
 
-// Write はレスポンスボディを書き込みます。
-// 書き込みが行われると、writtenフラグが設定されます。
+// Write writes the response body.
+// Writing is tracked by setting the written flag.
 func (rw *responseWriter) Write(b []byte) (int, error) {
 	if !rw.written {
 		rw.written = true
@@ -39,37 +39,37 @@ func (rw *responseWriter) Write(b []byte) (int, error) {
 	return rw.ResponseWriter.Write(b)
 }
 
-// Written はレスポンスが既に書き込まれているかどうかを返します。
+// Written returns whether the response has already been written.
 func (rw *responseWriter) Written() bool {
 	return rw.written
 }
 
-// Status は設定されたHTTPステータスコードを返します。
+// Status returns the set HTTP status code.
 func (rw *responseWriter) Status() int {
 	return rw.status
 }
 
-// HandlerFunc はHTTPリクエストを処理し、エラーを返す関数型です。
-// 標準のhttp.HandlerFuncとは異なり、エラーを返すことでエラーハンドリングを統一できます。
+// HandlerFunc is a function type for processing HTTP requests and returning an error.
+// Unlike the standard http.HandlerFunc, it allows returning an error for error handling.
 type HandlerFunc func(http.ResponseWriter, *http.Request) error
 
-// MiddlewareFunc はハンドラ関数を受け取り、新しいハンドラ関数を返す関数型です。
-// リクエスト処理の前後に共通処理を挿入するために使用されます。
+// MiddlewareFunc is a function type that takes a handler function and returns a new handler function.
+// It is used to insert common processing before and after request processing.
 type MiddlewareFunc func(HandlerFunc) HandlerFunc
 
-// CleanupMiddleware はクリーンアップ可能なミドルウェアのインターフェースです。
+// CleanupMiddleware is an interface for cleanupable middleware.
 type CleanupMiddleware interface {
 	Cleanup() error
 	Middleware() MiddlewareFunc
 }
 
-// cleanupMiddlewareImpl はCleanupMiddlewareインターフェースの実装です。
+// cleanupMiddlewareImpl is the implementation of CleanupMiddleware interface.
 type cleanupMiddlewareImpl struct {
 	mw      MiddlewareFunc
 	cleanup func() error
 }
 
-// Cleanup はCleanupMiddlewareインターフェースを実装します。
+// Cleanup implements the CleanupMiddleware interface.
 func (c *cleanupMiddlewareImpl) Cleanup() error {
 	if c.cleanup != nil {
 		return c.cleanup()
@@ -77,12 +77,12 @@ func (c *cleanupMiddlewareImpl) Cleanup() error {
 	return nil
 }
 
-// Middleware はCleanupMiddlewareインターフェースを実装します。
+// Middleware implements the CleanupMiddleware interface.
 func (c *cleanupMiddlewareImpl) Middleware() MiddlewareFunc {
 	return c.mw
 }
 
-// NewCleanupMiddleware は新しいCleanupMiddlewareを作成します。
+// NewCleanupMiddleware creates a new CleanupMiddleware.
 func NewCleanupMiddleware(mw MiddlewareFunc, cleanup func() error) CleanupMiddleware {
 	return &cleanupMiddlewareImpl{
 		mw:      mw,
@@ -90,107 +90,107 @@ func NewCleanupMiddleware(mw MiddlewareFunc, cleanup func() error) CleanupMiddle
 	}
 }
 
-// RouterOptions はルーターの動作を設定するためのオプションを提供します。
+// RouterOptions are options to set up the router's behavior.
 type RouterOptions struct {
-	// AllowRouteOverride は重複するルート登録の処理方法を指定します。
-	// true: 後から登録されたルートが既存のルートを上書きします。
-	// false: 重複するルートが検出された場合、エラーが返されます（デフォルト）。
+	// AllowRouteOverride specifies how to handle duplicate route registration.
+	// true: The later registered route overwrites the existing route.
+	// false: If a duplicate route is detected, an error is returned (default).
 	AllowRouteOverride bool
 
-	// RequestTimeout はリクエスト処理のデフォルトタイムアウト時間です。
-	// 0以下の値を指定するとタイムアウトは無効になります。
-	// デフォルト: 0秒（タイムアウトなし）
+	// RequestTimeout is the default timeout time for request processing.
+	// A value of 0 or less disables the timeout.
+	// Default: 0 seconds (no timeout)
 	RequestTimeout time.Duration
 
-	// CacheMaxEntries はルートキャッシュの最大エントリ数です。
-	// デフォルト: 1000
+	// CacheMaxEntries is the maximum number of entries in the route cache.
+	// Default: 1000
 	CacheMaxEntries int
 }
 
-// DefaultRouterOptions はデフォルトのルーターオプションを返します。
+// DefaultRouterOptions returns the default router options.
 func DefaultRouterOptions() RouterOptions {
 	return RouterOptions{
 		AllowRouteOverride: false,
-		RequestTimeout:     0 * time.Second, // タイムアウトなし
+		RequestTimeout:     0 * time.Second, // no timeout
 		CacheMaxEntries:    defaultCacheMaxEntries,
 	}
 }
 
-// Router はHTTPリクエストルーティングを管理する主要な構造体です。
-// 静的ルート（DoubleArrayTrie）と動的ルート（Radixツリー）の両方をサポートし、
-// 高速なルートマッチングとキャッシュ機構を提供します。
+// Router is the main structure for managing HTTP request routing.
+// It supports both static routes (DoubleArrayTrie) and dynamic routes (Radix tree),
+// providing high-speed route matching and caching mechanism.
 type Router struct {
-	// ルーティング関連
-	staticTrie   *DoubleArrayTrie // 静的ルート用の高速なトライ木構造
-	dynamicNodes [8]*Node         // HTTPメソッドごとの動的ルート用Radixツリー（インデックスはmethodToUint8に対応）
-	cache        *Cache           // ルートマッチングの結果をキャッシュし、パフォーマンスを向上
-	routes       []*Route         // 直接登録されたルート
-	groups       []*Group         // 登録されたグループ
+	// Routing-related
+	staticTrie   *DoubleArrayTrie // High-speed trie structure for static routes
+	dynamicNodes [8]*Node         // Radix tree for dynamic routes for each HTTP method (index corresponds to methodToUint8)
+	cache        *Cache           // Cache route matching results for performance
+	routes       []*Route         // Directly registered routes
+	groups       []*Group         // Registered groups
 
-	// ハンドラ関連
-	errorHandler    func(http.ResponseWriter, *http.Request, error) // エラー発生時の処理関数
-	shutdownHandler http.HandlerFunc                                // シャットダウン中のリクエスト処理関数
-	timeoutHandler  http.HandlerFunc                                // タイムアウト時の処理関数
+	// Handler-related
+	errorHandler    func(http.ResponseWriter, *http.Request, error) // Error handling function
+	shutdownHandler http.HandlerFunc                                // Request processing function during shutdown
+	timeoutHandler  http.HandlerFunc                                // Timeout handling function
 
-	// ミドルウェア関連
-	middleware atomic.Value // ミドルウェア関数のリスト（スレッドセーフな更新のためatomic.Value使用）
-	cleanupMws atomic.Value // クリーンアップ可能なミドルウェアのリスト
+	// Middleware-related
+	middleware atomic.Value // List of middleware functions (atomic.Value used for thread-safe updates)
+	cleanupMws atomic.Value // List of cleanupable middleware
 
-	// 同期関連
-	mu             sync.RWMutex   // 並行アクセスからの保護用ミューテックス
-	activeRequests sync.WaitGroup // アクティブなリクエストの数を追跡
-	wgMu           sync.Mutex     // activeRequestsへのアクセスを保護するミューテックス
-	shuttingDown   atomic.Bool    // シャットダウン中かどうかを示すフラグ
+	// Synchronization-related
+	mu             sync.RWMutex   // Mutex for protection from concurrent access
+	activeRequests sync.WaitGroup // Track the number of active requests
+	wgMu           sync.Mutex     // Mutex for protecting access to activeRequests
+	shuttingDown   atomic.Bool    // Flag indicating whether shutting down
 
-	// タイムアウト設定
-	requestTimeout time.Duration // リクエスト処理のタイムアウト時間（0の場合はタイムアウトなし）
-	timeoutMu      sync.RWMutex  // タイムアウト設定へのアクセスを保護するミューテックス
+	// Timeout settings
+	requestTimeout time.Duration // Request processing timeout time (0 means no timeout)
+	timeoutMu      sync.RWMutex  // Mutex for protecting access to timeout settings
 
-	// パラメータ関連
-	paramsPool *ParamsPool // URLパラメータオブジェクトのプール（各ルーターインスタンス固有）
+	// Parameter-related
+	paramsPool *ParamsPool // URL parameter object pool (specific to each router instance)
 
-	// 設定オプション
-	allowRouteOverride bool // 重複するルート登録を許可するかどうか
+	// Configuration options
+	allowRouteOverride bool // Allow duplicate route registration
 }
 
-// defaultErrorHandler はデフォルトのエラーハンドラで、
-// 500 Internal Server Errorを返します。
+// defaultErrorHandler is the default error handler,
+// which returns 500 Internal Server Error.
 func defaultErrorHandler(w http.ResponseWriter, r *http.Request, err error) {
 	http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 }
 
-// defaultShutdownHandler はデフォルトのシャットダウンハンドラで、
-// 503 Service Unavailableを返します。
+// defaultShutdownHandler is the default shutdown handler,
+// which returns 503 Service Unavailable.
 func defaultShutdownHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Connection", "close")
-	w.Header().Set("Retry-After", "60") // 60秒後に再試行を推奨
+	w.Header().Set("Retry-After", "60") // Recommend retrying after 60 seconds
 	http.Error(w, "Server is shutting down", http.StatusServiceUnavailable)
 }
 
-// defaultTimeoutHandler はデフォルトのタイムアウトハンドラで、
-// 503 Service Unavailableを返します。
+// defaultTimeoutHandler is the default timeout handler,
+// which returns 503 Service Unavailable.
 func defaultTimeoutHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Connection", "close")
-	w.Header().Set("Retry-After", "60") // 60秒後に再試行を推奨
+	w.Header().Set("Retry-After", "60") // Recommend retrying after 60 seconds
 	http.Error(w, "Request processing timed out", http.StatusServiceUnavailable)
 }
 
-// NewRouter は新しいRouterインスタンスを初期化して返します。
-// 静的ルート用のDoubleArrayTrieとキャッシュを初期化し、デフォルトのエラーハンドラを設定します。
+// NewRouter initializes and returns a new Router instance.
+// Initializes the DoubleArrayTrie for static routes and the cache, and sets the default error handler.
 func NewRouter() *Router {
 	return NewRouterWithOptions(DefaultRouterOptions())
 }
 
-// NewRouterWithOptions は指定されたオプションで新しいRouterインスタンスを初期化して返します。
+// NewRouterWithOptions initializes and returns a new Router instance with the specified options.
 func NewRouterWithOptions(opts RouterOptions) *Router {
-	// キャッシュサイズの検証
+	// Cache size verification
 	cacheMaxEntries := defaultCacheMaxEntries
 	if opts.CacheMaxEntries > 0 {
 		cacheMaxEntries = opts.CacheMaxEntries
 	}
 
-	// タイムアウトの検証
-	requestTimeout := 0 * time.Second // デフォルトでタイムアウトなし
+	// Timeout verification
+	requestTimeout := 0 * time.Second // Default no timeout
 	if opts.RequestTimeout >= 0 {
 		requestTimeout = opts.RequestTimeout
 	}
@@ -201,20 +201,20 @@ func NewRouterWithOptions(opts RouterOptions) *Router {
 		errorHandler:       defaultErrorHandler,
 		shutdownHandler:    defaultShutdownHandler,
 		timeoutHandler:     defaultTimeoutHandler,
-		paramsPool:         NewParamsPool(), // パラメータプールを初期化
+		paramsPool:         NewParamsPool(), // Initialize parameter pool
 		routes:             make([]*Route, 0),
 		groups:             make([]*Group, 0),
 		requestTimeout:     requestTimeout,
 		allowRouteOverride: opts.AllowRouteOverride,
 	}
-	// ミドルウェアリストを初期化（atomic.Valueを使用するため）
+	// Initialize middleware list (using atomic.Value)
 	r.middleware.Store(make([]MiddlewareFunc, 0, 8))
-	// クリーンアップ可能なミドルウェアリストを初期化
+	// Initialize cleanupable middleware list
 	r.cleanupMws.Store(make([]CleanupMiddleware, 0, 8))
-	// shuttingDownはデフォルトでfalseだが、明示的に設定
+	// shuttingDown is default false but explicitly set
 	r.shuttingDown.Store(false)
 
-	// 各HTTPメソッド用の動的ルートツリーを初期化
+	// Initialize dynamic route trees for each HTTP method
 	for i := range r.dynamicNodes {
 		r.dynamicNodes[i] = NewNode("")
 	}
@@ -222,66 +222,65 @@ func NewRouterWithOptions(opts RouterOptions) *Router {
 	return r
 }
 
-// SetErrorHandler はカスタムエラーハンドラを設定します。
-// これにより、アプリケーション固有のエラー処理を実装できます。
+// SetErrorHandler sets a custom error handler.
+// This allows implementing application-specific error handling.
 func (r *Router) SetErrorHandler(h func(http.ResponseWriter, *http.Request, error)) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.errorHandler = h
 }
 
-// SetShutdownHandler はカスタムシャットダウンハンドラを設定します。
-// これにより、シャットダウン中のリクエスト処理をカスタマイズできます。
+// SetShutdownHandler sets a custom shutdown handler.
+// This allows customizing request processing during shutdown.
 func (r *Router) SetShutdownHandler(h http.HandlerFunc) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.shutdownHandler = h
 }
 
-// SetTimeoutHandler はタイムアウト時の処理関数を設定します。
+// SetTimeoutHandler sets the timeout handling function.
 func (r *Router) SetTimeoutHandler(h http.HandlerFunc) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.timeoutHandler = h
 }
 
-// Use は1つ以上のミドルウェア関数をルーターに追加します。
-// ミドルウェアはすべてのルートハンドラの前に実行され、認証やロギングなどの
-// 共通処理を実装するために使用できます。
+// Use adds one or more middleware functions to the router.
+// Middleware functions are executed before all route handlers, allowing for common processing such as authentication and logging.
 func (r *Router) Use(mw ...MiddlewareFunc) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	// 現在のミドルウェアリストを取得
+	// Get current middleware list
 	currentMiddleware := r.middleware.Load().([]MiddlewareFunc)
 
-	// 新しいミドルウェアリストを作成（既存 + 新規）
+	// Create new middleware list (existing + new)
 	newMiddleware := make([]MiddlewareFunc, len(currentMiddleware)+len(mw))
 	copy(newMiddleware, currentMiddleware)
 	copy(newMiddleware[len(currentMiddleware):], mw)
 
-	// アトミックに更新
+	// Atomic update
 	r.middleware.Store(newMiddleware)
 }
 
-// AddCleanupMiddleware はクリーンアップ可能なミドルウェアをルーターに追加します。
-// このミドルウェアはShutdownメソッドが呼ばれたときにクリーンアップされます。
+// AddCleanupMiddleware adds a cleanupable middleware to the router.
+// This middleware is cleaned up when the Shutdown method is called.
 func (r *Router) AddCleanupMiddleware(cm CleanupMiddleware) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	// 現在のミドルウェアリストを取得
+	// Get current middleware list
 	currentMiddleware := r.middleware.Load().([]MiddlewareFunc)
 
-	// 新しいミドルウェアリストを作成（既存 + 新規）
+	// Create new middleware list (existing + new)
 	newMiddleware := make([]MiddlewareFunc, len(currentMiddleware)+1)
 	copy(newMiddleware, currentMiddleware)
 	newMiddleware[len(currentMiddleware)] = cm.Middleware()
 
-	// アトミックに更新
+	// Atomic update
 	r.middleware.Store(newMiddleware)
 
-	// クリーンアップリストに追加
+	// Add to cleanup list
 	currentCleanup := r.cleanupMws.Load().([]CleanupMiddleware)
 	newCleanup := make([]CleanupMiddleware, len(currentCleanup)+1)
 	copy(newCleanup, currentCleanup)
@@ -290,42 +289,42 @@ func (r *Router) AddCleanupMiddleware(cm CleanupMiddleware) {
 	r.cleanupMws.Store(newCleanup)
 }
 
-// ServeHTTP はHTTPリクエストを処理します。
-// ルートマッチングを行い、適切なハンドラを呼び出します。
-// ミドルウェアチェーンを構築し、エラーハンドリングを行います。
+// ServeHTTP handles HTTP requests.
+// It performs route matching, calls the appropriate handler,
+// builds the middleware chain, and handles errors.
 func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
-	// レスポンスラッパーを作成して、書き込み状態を追跡
+	// Create a response wrapper to track write status
 	rw := &responseWriter{ResponseWriter: w, status: http.StatusOK}
 
-	// タイムアウト関連の変数を関数の最初で宣言
+	// Declare timeout-related variables at the beginning of the function
 	var cancel context.CancelFunc
 	var done chan struct{}
-	var timeoutOccurred atomic.Bool // タイムアウトが発生したかどうかを追跡
+	var timeoutOccurred atomic.Bool // Track whether a timeout occurred
 
-	// パニックが発生した場合でもリソースをクリーンアップ
+	// Clean up resources even if a panic occurs
 	defer func() {
 		if cancel != nil {
-			cancel() // コンテキストをキャンセル
+			cancel() // Cancel the context
 		}
 		if done != nil {
-			close(done) // タイムアウト監視ゴルーチンを終了
+			close(done) // Terminate the timeout monitoring goroutine
 		}
 	}()
 
-	// ハンドラとルートを検索
+	// Find handler and route
 	handler, route, found := r.findHandlerAndRoute(req.Method, req.URL.Path)
 	if !found {
-		// 404処理
+		// 404 handling
 		http.NotFound(rw, req)
 		return
 	}
 
-	// 処理時間の制限を設定
+	// Set processing time limit
 	ctx := req.Context()
 
-	// 既存のデッドラインがない場合、設定されたタイムアウトを適用
+	// Apply the configured timeout if no existing deadline
 	if _, ok := ctx.Deadline(); !ok {
-		// タイムアウト設定を取得（ルート固有の設定があればそれを使用）
+		// Get timeout setting (use route-specific setting if available)
 		var timeout time.Duration
 		if route != nil {
 			timeout = route.GetTimeout()
@@ -335,24 +334,24 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			r.timeoutMu.RUnlock()
 		}
 
-		// タイムアウトが設定されている場合のみ適用
+		// Apply timeout only if it's set
 		if timeout > 0 {
 			ctx, cancel = context.WithTimeout(ctx, timeout)
-			defer cancel() // コンテキストリークを防止
+			defer cancel() // Prevent context leak
 			req = req.WithContext(ctx)
 
-			// コンテキストのキャンセルを監視
+			// Monitor context cancellation
 			done = make(chan struct{})
 
-			// タイムアウト監視ゴルーチン
+			// Timeout monitoring goroutine
 			go func() {
 				select {
 				case <-ctx.Done():
 					if ctx.Err() == context.DeadlineExceeded {
-						// タイムアウトの場合、タイムアウトハンドラを呼び出す
+						// If timeout, call timeout handler
 						timeoutOccurred.Store(true)
 
-						// レスポンスがまだ書き込まれていない場合のみ処理
+						// Process only if response hasn't been written yet
 						if !rw.Written() {
 							r.mu.RLock()
 							timeoutHandler := r.timeoutHandler
@@ -360,21 +359,21 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 							if timeoutHandler != nil {
 								timeoutHandler(rw, req)
 							} else {
-								// デフォルトのタイムアウト処理
+								// Default timeout processing
 								http.Error(rw, "Request timeout", http.StatusGatewayTimeout)
 							}
 						}
 					}
 				case <-done:
-					// 正常に処理が完了
+					// Normal processing completed
 				}
 			}()
 		}
 	}
 
-	// シャットダウン中の場合はシャットダウンハンドラを呼び出す
-	// atomic.Boolを使用しているため、読み取りは同期化されている
-	// シャットダウンフラグをローカル変数にコピーして、データ競合を防ぐ
+	// If shutting down, call shutdown handler
+	// Since atomic.Bool is used, reading is synchronized
+	// Copy shuttingDown flag to local variable to prevent data race
 	isShuttingDown := r.shuttingDown.Load()
 	if isShuttingDown {
 		r.mu.RLock()
@@ -384,21 +383,21 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	// アクティブなリクエストをカウント
-	// sync.WaitGroupは内部的に同期化されているが、
-	// 複数のゴルーチンからの同時アクセスを防ぐためにミューテックスで保護
+	// Count active requests
+	// sync.WaitGroup is internally synchronized,
+	// but mutex is used to prevent simultaneous access from multiple goroutines
 	r.wgMu.Lock()
 	r.activeRequests.Add(1)
 	r.wgMu.Unlock()
 
 	defer func() {
-		r.activeRequests.Done() // ミューテックスなしでDoneを呼び出す
+		r.activeRequests.Done() // Call Done without mutex
 	}()
 
-	// URLパラメータを取得
+	// Get URL parameters
 	params, paramsFound := r.cache.GetParams(generateRouteKey(methodToUint8(req.Method), normalizePath(req.URL.Path)))
 	if paramsFound && len(params) > 0 {
-		// キャッシュからパラメータを取得できた場合
+		// If parameters could be retrieved from cache
 		ps := r.paramsPool.Get()
 		for k, v := range params {
 			ps.Add(k, v)
@@ -408,20 +407,20 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		defer r.paramsPool.Put(ps)
 	}
 
-	// ミドルウェアチェーンを構築して実行
+	// Build middleware chain and execute
 	h := r.buildMiddlewareChain(handler)
 	err := h(rw, req)
 
-	// エラーが発生した場合はエラーハンドラを呼び出す
+	// If an error occurs, call error handler
 	if err != nil {
-		// タイムアウトが既に発生している場合は処理しない
+		// If timeout has already occurred, do not process
 		if timeoutOccurred.Load() {
 			return
 		}
 
-		// レスポンスがまだ書き込まれていない場合のみ処理
+		// Process only if response hasn't been written yet
 		if !rw.Written() {
-			// エラーハンドラ内でのパニックを処理
+			// Handle panic in error handler
 			defer func() {
 				if r := recover(); r != nil {
 					log.Printf("Error handler panic: %v", r)
@@ -431,7 +430,7 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 				}
 			}()
 
-			// ルート固有のエラーハンドラがあれば使用
+			// Use route-specific error handler if available
 			var errorHandler func(http.ResponseWriter, *http.Request, error)
 			if route != nil && route.errorHandler != nil {
 				errorHandler = route.errorHandler
@@ -441,58 +440,57 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 				r.mu.RUnlock()
 			}
 
-			// エラーハンドラを呼び出す
+			// Call error handler
 			errorHandler(rw, req, err)
 		}
 	}
 }
 
-// buildMiddlewareChain はハンドラ関数にすべてのミドルウェアを適用し、
-// 最終的な実行チェーンを構築します。ミドルウェアは登録された順序で
-// 適用されます（最初に登録されたものが最初に実行）。
+// buildMiddlewareChain applies all middleware to a handler function,
+// building the final execution chain. Middleware is applied in the order they are registered (first registered first executed).
 func (r *Router) buildMiddlewareChain(final HandlerFunc) HandlerFunc {
 	middleware := r.middleware.Load().([]MiddlewareFunc)
 	return applyMiddlewareChain(final, middleware)
 }
 
-// findHandlerAndRoute はリクエストのパスとメソッドに一致するハンドラとルートを検索します。
-// キャッシュを使用して高速に検索し、キャッシュにない場合は静的ルートと動的ルートを順に検索します。
+// findHandlerAndRoute searches for a handler and route that matches the request path and method.
+// It uses cache for fast search and falls back to static routes and dynamic routes if not in cache.
 func (r *Router) findHandlerAndRoute(method, path string) (HandlerFunc, *Route, bool) {
-	// パスの正規化
+	// Normalize path
 	path = normalizePath(path)
 
-	// HTTPメソッドを数値に変換
+	// Convert HTTP method to value
 	methodIndex := methodToUint8(method)
 	if methodIndex == 0 {
 		return nil, nil, false
 	}
 
-	// キャッシュキーを生成
+	// Generate cache key
 	key := generateRouteKey(methodIndex, path)
 
-	// キャッシュを確認
+	// Check cache
 	if handler, found := r.cache.Get(key); found {
-		// キャッシュヒット
+		// Cache hit
 		return handler, nil, true
 	}
 
-	// 静的ルートを検索
+	// Search static route
 	if handler := r.staticTrie.Search(path); handler != nil {
-		// 静的ルートが見つかった場合はキャッシュに追加
+		// If static route is found, add to cache
 		r.cache.Set(key, handler, nil)
 		return handler, nil, true
 	}
 
-	// 動的ルートを検索
+	// Search dynamic route
 	nodeIndex := methodIndex - 1
 	node := r.dynamicNodes[nodeIndex]
 	if node != nil {
-		// パラメータオブジェクトをプールから取得
+		// Get parameter object from pool
 		params := r.paramsPool.Get()
 		handler, matched := node.Match(path, params)
 		if matched && handler != nil {
-			// 動的ルートが見つかった場合はキャッシュに追加
-			// パラメータをマップに変換
+			// If dynamic route is found, add to cache
+			// Convert parameters to map
 			paramsMap := make(map[string]string, params.Len())
 			for i := 0; i < params.Len(); i++ {
 				key, val := params.data[i].key, params.data[i].value
@@ -500,35 +498,35 @@ func (r *Router) findHandlerAndRoute(method, path string) (HandlerFunc, *Route, 
 			}
 			r.cache.Set(key, handler, paramsMap)
 
-			// パラメータオブジェクトをプールに返却
+			// Return parameter object to pool
 			r.paramsPool.Put(params)
 			return handler, nil, true
 		}
-		// パラメータオブジェクトをプールに返却
+		// Return parameter object to pool
 		r.paramsPool.Put(params)
 	}
 
-	// ルートが見つからなかった場合
+	// Route not found
 	return nil, nil, false
 }
 
-// Handle は新しいルートを登録します。パターンが静的な場合はDoubleArrayTrieに、
-// 動的パラメータを含む場合はRadixツリーに登録します。
-// パターン、HTTPメソッド、ハンドラ関数の検証も行います。
-// 静的ルートと動的ルートが競合する場合は静的ルートが優先されます。
-// 重複するルートの処理は allowRouteOverride オプションによって決まります：
-// - true: 後から登録されたルートが既存のルートを上書きします。
-// - false: 重複するルートが検出された場合、エラーが返されます（デフォルト）。
+// Handle registers a new route. If the pattern is static, it registers in DoubleArrayTrie,
+// if it contains dynamic parameters, it registers in Radix tree.
+// It also validates the pattern, HTTP method, and handler function.
+// If static routes and dynamic routes conflict, static routes take precedence.
+// Route processing is determined by the allowRouteOverride option:
+// - true: The later registered route overwrites the existing route.
+// - false: If a duplicate route is detected, an error is returned (default).
 func (r *Router) Handle(method, pattern string, h HandlerFunc) error {
-	// パターンの検証
+	// Validate pattern
 	if pattern == "" {
 		return &RouterError{Code: ErrInvalidPattern, Message: "empty pattern"}
 	}
 
-	// パスの正規化（先頭に/を追加、末尾の/を削除）
+	// Normalize path (add leading / and remove trailing /)
 	pattern = normalizePath(pattern)
 
-	// ハンドラとメソッドの検証
+	// Validate handler and method
 	if h == nil {
 		return &RouterError{Code: ErrNilHandler, Message: "nil handler"}
 	}
@@ -539,77 +537,77 @@ func (r *Router) Handle(method, pattern string, h HandlerFunc) error {
 		return err
 	}
 
-	// パターンをセグメントに分割し、静的か動的かを判断
+	// Split pattern into segments and determine whether static or dynamic
 	methodIndex := methodToUint8(method)
 	segments := parseSegments(pattern)
 	isStatic := isAllStatic(segments)
 
-	// 重複チェック
+	// Duplicate check
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	// 静的ルートの場合
+	// Static route case
 	if isStatic {
-		// 静的ルートの重複チェック
+		// Duplicate check for static route
 		existingHandler := r.staticTrie.Search(pattern)
 		if existingHandler != nil {
-			// 重複が見つかった場合
+			// If duplicate is found
 			if !r.allowRouteOverride {
 				return &RouterError{Code: ErrInvalidPattern, Message: "duplicate static route: " + pattern}
 			}
-			// 上書きモードの場合は、既存のルートを上書き
+			// If overwrite mode, overwrite existing route
 			return r.staticTrie.Add(pattern, h)
 		}
 
-		// 動的ルートとの競合チェック
+		// Dynamic route and static route conflict check
 		nodeIndex := methodIndex - 1
 		node := r.dynamicNodes[nodeIndex]
 		if node != nil {
 			params := NewParams()
 			existingHandler, matched := node.Match(pattern, params)
-			PutParams(params) // パラメータオブジェクトをプールに返却
+			PutParams(params) // Return parameter object to pool
 
-			// 動的ルートが既に存在する場合
+			// If dynamic route already exists
 			if matched && existingHandler != nil {
 				if !r.allowRouteOverride {
 					return &RouterError{Code: ErrInvalidPattern, Message: "route already registered as dynamic route: " + pattern}
 				}
-				// 上書きモードの場合は、静的ルートを優先（動的ルートを上書き）
+				// If overwrite mode, prioritize static route (overwrite dynamic route)
 			}
 		}
 
-		// 新しい静的ルートを登録
+		// Register new static route
 		return r.staticTrie.Add(pattern, h)
 	}
 
-	// 動的ルートの場合
-	// 静的ルートとの競合チェック
+	// Dynamic route case
+	// Static route and dynamic route conflict check
 	existingHandler := r.staticTrie.Search(pattern)
 	if existingHandler != nil {
-		// 静的ルートが既に存在する場合
+		// If static route already exists
 		if !r.allowRouteOverride {
 			return &RouterError{Code: ErrInvalidPattern, Message: "route already registered as static route: " + pattern}
 		}
-		// 上書きモードの場合でも、静的ルートを優先（エラーを返す）
+		// If overwrite mode, prioritize static route (return error)
 		return &RouterError{Code: ErrInvalidPattern, Message: "cannot override static route with dynamic route: " + pattern}
 	}
 
-	// 動的ルートの登録
+	// Register dynamic route
 	nodeIndex := methodIndex - 1
 	node := r.dynamicNodes[nodeIndex]
 	if node == nil {
-		// このHTTPメソッド用の動的ルートツリーを初期化
+		// Initialize dynamic route tree for this HTTP method
 		node = NewNode("")
 		r.dynamicNodes[nodeIndex] = node
 	}
 
-	// 既存の動的ルートをチェック
+	// Check existing dynamic route
 	if r.allowRouteOverride {
-		// 上書きモードの場合は、既存のルートを削除してから追加
+		// If overwrite mode, remove existing route before adding
 		node.RemoveRoute(segments)
 	}
 
-	// ルートを追加
+	// Add route
 	if err := node.AddRoute(segments, h); err != nil {
 		return err
 	}
@@ -617,8 +615,8 @@ func (r *Router) Handle(method, pattern string, h HandlerFunc) error {
 	return nil
 }
 
-// parseSegments はURLパスを「/」で区切ってセグメントの配列に分割します。
-// 先頭の「/」は削除され、空のパスや「/」のみの場合は空の文字列を含む配列を返します。
+// parseSegments splits the URL path into an array of segments separated by "/".
+// Leading "/" is removed, and if the path is empty or just "/", it returns an array containing an empty string.
 func parseSegments(path string) []string {
 	if path == "" || path == "/" {
 		return []string{""}
@@ -629,14 +627,14 @@ func parseSegments(path string) []string {
 	return strings.Split(path, "/")
 }
 
-// isAllStatic はセグメントの配列がすべて静的（パラメータを含まない）かどうかを判定します。
-// 一つでも動的セグメント（{param}形式）があればfalseを返します。
+// isAllStatic determines whether the array of segments is all static (no parameters).
+// If there is even one dynamic segment (e.g., {param} format), it returns false.
 func isAllStatic(segs []string) bool {
 	return !slices.ContainsFunc(segs, isDynamicSeg)
 }
 
-// isDynamicSeg はセグメントが動的パラメータ（{param}形式）かどうかを判定します。
-// 先頭が「{」で末尾が「}」の場合は動的セグメントと判断します。
+// isDynamicSeg determines whether a segment is a dynamic parameter (e.g., {param} format).
+// If the segment starts with "{" and ends with "}", it is considered a dynamic segment.
 func isDynamicSeg(seg string) bool {
 	if seg == "" {
 		return false
@@ -644,23 +642,23 @@ func isDynamicSeg(seg string) bool {
 	return seg[0] == '{' && seg[len(seg)-1] == '}'
 }
 
-// generateRouteKey はHTTPメソッドとパスからキャッシュキーを生成します。
-// FNV-1aハッシュアルゴリズムを使用して高速に一意のキーを生成します。
+// generateRouteKey generates a cache key from HTTP method and path.
+// It uses FNV-1a hashing algorithm for fast unique key generation.
 func generateRouteKey(method uint8, path string) uint64 {
-	// FNV-1aハッシュの定数
+	// FNV-1a hashing constants
 	const (
 		offset64 = uint64(14695981039346656037)
 		prime64  = uint64(1099511628211)
 	)
 
-	// ハッシュ値の初期化
+	// Initialize hash value
 	hash := offset64
 
-	// メソッドをハッシュに組み込む
+	// Incorporate method into hash
 	hash ^= uint64(method)
 	hash *= prime64
 
-	// パスの各バイトをハッシュに組み込む（文字列をバイトスライスに変換せずに直接アクセス）
+	// Incorporate each byte of path into hash (directly access string without converting to byte slice)
 	for i := 0; i < len(path); i++ {
 		hash ^= uint64(path[i])
 		hash *= prime64
@@ -669,9 +667,9 @@ func generateRouteKey(method uint8, path string) uint64 {
 	return hash
 }
 
-// methodToUint8 はHTTPメソッド文字列を内部で使用する数値表現に変換します。
-// 各メソッドに1〜7の値を割り当て、未対応のメソッドは0を返します。
-// この数値はdynamicNodesの配列インデックスとして使用されます。
+// methodToUint8 converts the HTTP method string to its internal numeric representation.
+// It assigns values 1-7 to each method and returns 0 for unsupported methods.
+// This value is used as the index in the dynamicNodes array.
 func methodToUint8(m string) uint8 {
 	switch m {
 	case http.MethodGet:
@@ -693,23 +691,23 @@ func methodToUint8(m string) uint8 {
 	}
 }
 
-// contextWithParams はURLパラメータをリクエストコンテキストに追加します。
-// これにより、ハンドラ関数内でGetParams(r.Context())を使ってパラメータにアクセスできます。
+// contextWithParams adds URL parameters to the request context.
+// This allows accessing parameters in handler functions using GetParams(r.Context()).
 func contextWithParams(ctx context.Context, ps *Params) context.Context {
 	return context.WithValue(ctx, paramsKey{}, ps)
 }
 
-// Shutdown はルーターをグレースフルにシャットダウンします。
-// 新しいリクエストの受け付けを停止し、既存のリクエストが完了するのを待ちます。
-// 指定されたコンテキストがキャンセルされた場合、待機を中止してエラーを返します。
+// Shutdown gracefully shuts down the router.
+// It stops accepting new requests and waits for existing requests to complete.
+// If the specified context is canceled, it stops waiting and returns an error.
 func (r *Router) Shutdown(ctx context.Context) error {
-	// シャットダウンフラグを設定
+	// Set shuttingDown flag
 	r.shuttingDown.Store(true)
 
-	// キャッシュのクリーンアップループを停止
+	// Stop cache cleanup loop
 	r.cache.Stop()
 
-	// クリーンアップ可能なミドルウェアをクリーンアップ
+	// Clean up cleanupable middleware
 	cleanupMws := r.cleanupMws.Load().([]CleanupMiddleware)
 	for _, cm := range cleanupMws {
 		if err := cm.Cleanup(); err != nil {
@@ -717,14 +715,14 @@ func (r *Router) Shutdown(ctx context.Context) error {
 		}
 	}
 
-	// アクティブなリクエストの完了を待機
+	// Wait for active requests to complete
 	waitCh := make(chan struct{})
 	go func() {
 		r.activeRequests.Wait()
 		close(waitCh)
 	}()
 
-	// コンテキストのキャンセルまたはすべてのリクエストの完了を待機
+	// Wait for context cancellation or all requests to complete
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
@@ -733,105 +731,104 @@ func (r *Router) Shutdown(ctx context.Context) error {
 	}
 }
 
-// ShutdownWithTimeoutContext はタイムアウト付きでルーターをグレースフルにシャットダウンします。
-// 指定された時間内にすべてのリクエストが完了しない場合、エラーを返します。
+// ShutdownWithTimeoutContext gracefully shuts down the router with a timeout.
+// It returns an error if all requests do not complete within the specified time.
 func (r *Router) ShutdownWithTimeoutContext(timeout time.Duration) error {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	return r.Shutdown(ctx)
 }
 
-// MustHandle はHandleメソッドのパニックバージョンです。
-// エラーが発生した場合はパニックを発生させます。
+// MustHandle is the panicking version of Handle.
+// If an error occurs, it panics.
 func (r *Router) MustHandle(method, pattern string, h HandlerFunc) {
 	if err := r.Handle(method, pattern, h); err != nil {
 		panic(err)
 	}
 }
 
-// Route は新しいルートを登録します。パターンが静的な場合はDoubleArrayTrieに、
-// 動的パラメータを含む場合はRadixツリーに登録します。
-// パターン、HTTPメソッド、ハンドラ関数の検証も行います。
-// 静的ルートと動的ルートが競合する場合は静的ルートが優先されます。
-// その他の重複パターン（同一パスの重複登録など）はエラーとなります。
+// Route registers a new route. If the pattern is static, it registers in DoubleArrayTrie,
+// if it contains dynamic parameters, it registers in Radix tree.
+// It also validates the pattern, HTTP method, and handler function.
+// If static routes and dynamic routes conflict, static routes take precedence.
+// Other duplicate patterns (e.g., duplicate registration of the same path) are errors.
 func (r *Router) Route(method, pattern string, h HandlerFunc, middleware ...MiddlewareFunc) *Route {
-	// パスの正規化
+	// Normalize path
 	pattern = normalizePath(pattern)
 
 	route := &Route{
-		group:        nil, // ルーターに直接登録されたルートはグループに属さない
-		router:       r,   // ルーターへの参照を設定
+		group:        nil, // Directly registered routes do not belong to a group
+		router:       r,   // Set reference to router
 		method:       method,
 		subPath:      pattern,
 		handler:      h,
 		middleware:   make([]MiddlewareFunc, 0, len(middleware)),
 		applied:      false,
 		timeout:      0,
-		errorHandler: nil, // nilに設定（ルーターのデフォルト値を使用）
+		errorHandler: nil, // Set to nil (use default value of router)
 	}
 
-	// ミドルウェアを追加
+	// Add middleware
 	if len(middleware) > 0 {
 		route.middleware = append(route.middleware, middleware...)
 	}
 
-	// ルートをルーターに追加
+	// Add route to router
 	r.routes = append(r.routes, route)
 
 	return route
 }
 
-// Get はGETメソッドのルートを作成します。
-// 返されたRouteオブジェクトに対してWithMiddlewareを呼び出すことで、
-// 特定のミドルウェアを適用できます。
+// Get creates a route for the GET method.
+// The returned Route object can be used to apply specific middleware.
 func (r *Router) Get(pattern string, h HandlerFunc, middleware ...MiddlewareFunc) *Route {
 	return r.Route(http.MethodGet, pattern, h, middleware...)
 }
 
-// Post はPOSTメソッドのルートを作成します。
+// Post creates a route for the POST method.
 func (r *Router) Post(pattern string, h HandlerFunc, middleware ...MiddlewareFunc) *Route {
 	return r.Route(http.MethodPost, pattern, h, middleware...)
 }
 
-// Put はPUTメソッドのルートを作成します。
+// Put creates a route for the PUT method.
 func (r *Router) Put(pattern string, h HandlerFunc, middleware ...MiddlewareFunc) *Route {
 	return r.Route(http.MethodPut, pattern, h, middleware...)
 }
 
-// Delete はDELETEメソッドのルートを作成します。
+// Delete creates a route for the DELETE method.
 func (r *Router) Delete(pattern string, h HandlerFunc, middleware ...MiddlewareFunc) *Route {
 	return r.Route(http.MethodDelete, pattern, h, middleware...)
 }
 
-// Patch はPATCHメソッドのルートを作成します。
+// Patch creates a route for the PATCH method.
 func (r *Router) Patch(pattern string, h HandlerFunc, middleware ...MiddlewareFunc) *Route {
 	return r.Route(http.MethodPatch, pattern, h, middleware...)
 }
 
-// Head はHEADメソッドのルートを作成します。
+// Head creates a route for the HEAD method.
 func (r *Router) Head(pattern string, h HandlerFunc, middleware ...MiddlewareFunc) *Route {
 	return r.Route(http.MethodHead, pattern, h, middleware...)
 }
 
-// Options はOPTIONSメソッドのルートを作成します。
+// Options creates a route for the OPTIONS method.
 func (r *Router) Options(pattern string, h HandlerFunc, middleware ...MiddlewareFunc) *Route {
 	return r.Route(http.MethodOptions, pattern, h, middleware...)
 }
 
-// Build はすべてのルートを登録します。
-// このメソッドは明示的に呼び出す必要があります。
-// 重複するルートの処理はルーターの allowRouteOverride オプションによって決まります：
-// - true: 後から登録されたルートが既存のルートを上書きします。
-// - false: 重複するルートが検出された場合、エラーが返されます（デフォルト）。
+// Build registers all routes.
+// This method must be explicitly called.
+// Route processing is determined by the router's allowRouteOverride option:
+// - true: The later registered route overwrites the existing route.
+// - false: If a duplicate route is detected, an error is returned (default).
 func (r *Router) Build() error {
-	// グローバルな重複チェック用のマップ
+	// Global duplicate check map
 	globalRouteMap := make(map[string]string)
 
-	// 直接登録されたルートを一時的に保存
+	// Temporarily save directly registered routes
 	directRoutes := make([]*Route, len(r.routes))
 	copy(directRoutes, r.routes)
 
-	// グループのルートを収集
+	// Collect routes for groups
 	var allGroupRoutes []*Route
 	for i, group := range r.groups {
 		groupID := "group" + strconv.Itoa(i)
@@ -842,12 +839,12 @@ func (r *Router) Build() error {
 		allGroupRoutes = append(allGroupRoutes, groupRoutes...)
 	}
 
-	// すべてのルートを事前チェック（重複や無効なパターンをチェック）
+	// Pre-check all routes (check for duplicates and invalid patterns)
 	for _, route := range directRoutes {
-		// ルート情報を事前に生成
+		// Generate route information in advance
 		routeKey := route.method + ":" + route.subPath
 
-		// 重複チェック
+		// Duplicate check
 		if existingRoute, exists := globalRouteMap[routeKey]; exists {
 			if !r.allowRouteOverride {
 				return &RouterError{
@@ -855,16 +852,16 @@ func (r *Router) Build() error {
 					Message: "duplicate route definition: " + route.method + " " + route.subPath + " (conflicts with " + existingRoute + ")",
 				}
 			}
-			// 上書きモードの場合は警告を出力
+			// If overwrite mode, output warning
 			log.Printf("Warning: overriding route: %s %s (previously defined as %s)",
 				route.method, route.subPath, existingRoute)
 		}
 
-		// ルート情報をマップに追加
+		// Add route information to map
 		routeInfo := "router:" + route.method + " " + route.subPath
 		globalRouteMap[routeKey] = routeInfo
 
-		// ミドルウェアをハンドラに適用
+		// Apply middleware to handler
 		var handler HandlerFunc
 		if len(route.middleware) > 0 {
 			handler = applyMiddlewareChain(route.handler, route.middleware)
@@ -872,15 +869,15 @@ func (r *Router) Build() error {
 			handler = route.handler
 		}
 
-		// ルートを検証（実際には登録しない）
+		// Route validation (actually not registered)
 		if err := r.validateRoute(route.method, route.subPath, handler); err != nil {
 			return err
 		}
 	}
 
-	// グループのルートも事前チェック
+	// Pre-check routes for groups
 	for _, route := range allGroupRoutes {
-		// 完全なパスを計算
+		// Calculate full path
 		var fullPath string
 		if route.group != nil {
 			fullPath = joinPath(route.group.prefix, normalizePath(route.subPath))
@@ -888,10 +885,10 @@ func (r *Router) Build() error {
 			fullPath = route.subPath
 		}
 
-		// ルート情報を事前に生成
+		// Generate route information in advance
 		routeKey := route.method + ":" + fullPath
 
-		// 重複チェック
+		// Duplicate check
 		if existingRoute, exists := globalRouteMap[routeKey]; exists {
 			if !r.allowRouteOverride {
 				return &RouterError{
@@ -899,16 +896,16 @@ func (r *Router) Build() error {
 					Message: "duplicate route definition: " + route.method + " " + fullPath + " (conflicts with " + existingRoute + ")",
 				}
 			}
-			// 上書きモードの場合は警告を出力
+			// If overwrite mode, output warning
 			log.Printf("Warning: overriding route: %s %s (previously defined as %s)",
 				route.method, fullPath, existingRoute)
 		}
 
-		// ルート情報をマップに追加
+		// Add route information to map
 		routeInfo := "group:" + route.method + " " + fullPath
 		globalRouteMap[routeKey] = routeInfo
 
-		// ミドルウェアをハンドラに適用
+		// Apply middleware to handler
 		var handler HandlerFunc
 		if len(route.middleware) > 0 {
 			handler = applyMiddlewareChain(route.handler, route.middleware)
@@ -916,13 +913,13 @@ func (r *Router) Build() error {
 			handler = route.handler
 		}
 
-		// ルートを検証（実際には登録しない）
+		// Route validation (actually not registered)
 		if err := r.validateRoute(route.method, fullPath, handler); err != nil {
 			return err
 		}
 	}
 
-	// すべてのチェックが通ったら、実際に登録
+	// If all checks pass, actually register
 	for _, route := range directRoutes {
 		if err := route.build(); err != nil && !r.allowRouteOverride {
 			return err
@@ -938,21 +935,21 @@ func (r *Router) Build() error {
 	return nil
 }
 
-// validateRoute はルートを検証しますが、実際には登録しません。
-// Handle メソッドの検証部分のみを抽出したものです。
+// validateRoute checks the route but does not actually register it.
+// It is only for validation in the Handle method.
 func (r *Router) validateRoute(method, pattern string, h HandlerFunc) error {
-	// パスの検証
+	// Path validation
 	if pattern == "" || (len(pattern) > 1 && pattern[0] != '/') {
 		return &RouterError{Code: ErrInvalidPattern, Message: "invalid path: " + pattern}
 	}
 
-	// HTTPメソッドを数値に変換
+	// Convert HTTP method to value
 	methodIndex := methodToUint8(method)
 	if methodIndex == 0 {
 		return &RouterError{Code: ErrInvalidMethod, Message: "unsupported HTTP method: " + method}
 	}
 
-	// ハンドラ関数の検証
+	// Handler function validation
 	if h == nil {
 		return &RouterError{Code: ErrNilHandler, Message: "handler function is nil"}
 	}
@@ -960,21 +957,21 @@ func (r *Router) validateRoute(method, pattern string, h HandlerFunc) error {
 	return nil
 }
 
-// collectGroupRoutes はグループ内のすべてのルートを収集し、グローバルな重複チェックを行います。
+// collectGroupRoutes collects all routes in a group and performs global duplicate check.
 func (r *Router) collectGroupRoutes(group *Group, globalRouteMap map[string]string, groupID string) ([]*Route, error) {
 	var routes []*Route
 
-	// グループ内のルートを収集
+	// Collect routes in group
 	for _, route := range group.routes {
 		if route.applied {
 			continue
 		}
 
-		// 完全なパスを計算
+		// Calculate full path
 		fullPath := joinPath(group.prefix, normalizePath(route.subPath))
 		routeKey := route.method + ":" + fullPath
 
-		// グローバルな重複チェック
+		// Global duplicate check
 		if existingRoute, exists := globalRouteMap[routeKey]; exists {
 			return nil, &RouterError{
 				Code:    ErrInvalidPattern,
@@ -989,30 +986,30 @@ func (r *Router) collectGroupRoutes(group *Group, globalRouteMap map[string]stri
 	return routes, nil
 }
 
-// SetRequestTimeout はリクエスト処理のタイムアウト時間を設定します。
-// 0以下の値を指定するとタイムアウトは無効になります。
+// SetRequestTimeout sets the request processing timeout time.
+// A value of 0 or less disables the timeout.
 func (r *Router) SetRequestTimeout(timeout time.Duration) {
 	r.timeoutMu.Lock()
 	defer r.timeoutMu.Unlock()
 	r.requestTimeout = timeout
 }
 
-// GetRequestTimeout は現在設定されているリクエスト処理のタイムアウト時間を返します。
+// GetRequestTimeout returns the currently set request processing timeout time.
 func (r *Router) GetRequestTimeout() time.Duration {
 	r.timeoutMu.RLock()
 	defer r.timeoutMu.RUnlock()
 	return r.requestTimeout
 }
 
-// TimeoutSettings はルーター、グループ、ルートのタイムアウト設定を文字列として返します。
-// 設定の継承関係や上書き状況を視覚的に表示します。
+// TimeoutSettings returns the timeout settings for the router, group, and route as a string.
+// It shows the inheritance relationship and override status.
 func (r *Router) TimeoutSettings() string {
 	var result strings.Builder
 
-	// ルーターレベルの設定
+	// Router level setting
 	result.WriteString("Router Default Timeout: " + r.GetRequestTimeout().String() + "\n")
 
-	// 直接登録されたルートの設定
+	// Direct routes setting
 	if len(r.routes) > 0 {
 		result.WriteString("Direct Routes:\n")
 		for _, route := range r.routes {
@@ -1026,7 +1023,7 @@ func (r *Router) TimeoutSettings() string {
 		}
 	}
 
-	// グループとそのルートの設定
+	// Group and its routes setting
 	if len(r.groups) > 0 {
 		result.WriteString("Groups:\n")
 		for _, group := range r.groups {
@@ -1038,12 +1035,12 @@ func (r *Router) TimeoutSettings() string {
 	return result.String()
 }
 
-// buildGroupTimeoutSettings はグループとそのルートのタイムアウト設定を文字列として返します。
+// buildGroupTimeoutSettings returns the timeout settings for a group and its routes as a string.
 func buildGroupTimeoutSettings(group *Group, indent int) string {
 	var result strings.Builder
 	indentStr := strings.Repeat("  ", indent)
 
-	// グループの設定
+	// Group setting
 	timeoutSource := "inherited"
 	if group.timeout > 0 {
 		timeoutSource = "override"
@@ -1053,7 +1050,7 @@ func buildGroupTimeoutSettings(group *Group, indent int) string {
 		group.GetTimeout().String() + " (" + timeoutSource + ")\n"
 	result.WriteString(groupInfo)
 
-	// ルートの設定
+	// Route setting
 	for _, route := range group.routes {
 		routeInfo := buildRouteTimeoutSettings(route, indent+1)
 		result.WriteString(routeInfo)
@@ -1062,11 +1059,11 @@ func buildGroupTimeoutSettings(group *Group, indent int) string {
 	return result.String()
 }
 
-// buildRouteTimeoutSettings はルートのタイムアウト設定を文字列として返します。
+// buildRouteTimeoutSettings returns the timeout settings for a route as a string.
 func buildRouteTimeoutSettings(route *Route, indent int) string {
 	indentStr := strings.Repeat("  ", indent)
 
-	// ルートの設定
+	// Route setting
 	timeoutSource := "inherited"
 	if route.timeout > 0 {
 		timeoutSource = "override"
@@ -1076,8 +1073,8 @@ func buildRouteTimeoutSettings(route *Route, indent int) string {
 		route.GetTimeout().String() + " (" + timeoutSource + ")\n"
 }
 
-// GetErrorHandler はルーターのデフォルトエラーハンドラを返します。
-// エラーハンドラが設定されていない場合は、デフォルトのエラーハンドラを返します。
+// GetErrorHandler returns the default error handler for the router.
+// If no error handler is set, it returns the default error handler.
 func (r *Router) GetErrorHandler() func(http.ResponseWriter, *http.Request, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -1087,15 +1084,15 @@ func (r *Router) GetErrorHandler() func(http.ResponseWriter, *http.Request, erro
 	return defaultErrorHandler
 }
 
-// ErrorHandlerSettings はルーター、グループ、ルートのエラーハンドラ設定を文字列として返します。
-// 設定の継承関係や上書き状況を視覚的に表示します。
+// ErrorHandlerSettings returns the error handler settings for the router, group, and route as a string.
+// It shows the inheritance relationship and override status.
 func (r *Router) ErrorHandlerSettings() string {
 	var result strings.Builder
 
-	// ルーターレベルの設定
+	// Router level setting
 	result.WriteString("Router Default Error Handler: " + handlerToString(r.GetErrorHandler()) + "\n")
 
-	// 直接登録されたルートの設定
+	// Direct routes setting
 	if len(r.routes) > 0 {
 		result.WriteString("Direct Routes:\n")
 		for _, route := range r.routes {
@@ -1109,7 +1106,7 @@ func (r *Router) ErrorHandlerSettings() string {
 		}
 	}
 
-	// グループとそのルートの設定
+	// Groups and their routes setting
 	if len(r.groups) > 0 {
 		result.WriteString("Groups:\n")
 		for _, group := range r.groups {
@@ -1121,20 +1118,20 @@ func (r *Router) ErrorHandlerSettings() string {
 	return result.String()
 }
 
-// handlerToString はハンドラ関数を文字列表現に変換します
-func handlerToString(handler interface{}) string {
+// handlerToString converts a handler function to its string representation
+func handlerToString(handler any) string {
 	if handler == nil {
 		return "nil"
 	}
 	return reflect.TypeOf(handler).String()
 }
 
-// buildGroupErrorHandlerSettings はグループとそのルートのエラーハンドラ設定を文字列として返します。
+// buildGroupErrorHandlerSettings returns the error handler settings for a group and its routes as a string
 func buildGroupErrorHandlerSettings(group *Group, indent int) string {
 	var result strings.Builder
 	indentStr := strings.Repeat("  ", indent)
 
-	// グループの設定
+	// Group settings
 	handlerSource := "inherited"
 	if group.errorHandler != nil {
 		handlerSource = "override"
@@ -1144,7 +1141,7 @@ func buildGroupErrorHandlerSettings(group *Group, indent int) string {
 		handlerToString(group.GetErrorHandler()) + " (" + handlerSource + ")\n"
 	result.WriteString(groupInfo)
 
-	// ルートの設定
+	// Route settings
 	for _, route := range group.routes {
 		routeInfo := buildRouteErrorHandlerSettings(route, indent+1)
 		result.WriteString(routeInfo)
@@ -1153,11 +1150,11 @@ func buildGroupErrorHandlerSettings(group *Group, indent int) string {
 	return result.String()
 }
 
-// buildRouteErrorHandlerSettings はルートのエラーハンドラ設定を文字列として返します。
+// buildRouteErrorHandlerSettings returns the error handler settings for a route as a string
 func buildRouteErrorHandlerSettings(route *Route, indent int) string {
 	indentStr := strings.Repeat("  ", indent)
 
-	// ルートの設定
+	// Route settings
 	handlerSource := "inherited"
 	if route.errorHandler != nil {
 		handlerSource = "override"

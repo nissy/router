@@ -20,7 +20,7 @@ type Cache struct {
 	cleaning   int32
 	stopChan   chan struct{}
 	maxEntries int
-	stopped    atomic.Bool // キャッシュが停止しているかどうかを追跡
+	stopped    atomic.Bool // Tracks whether the cache has been stopped
 }
 
 type cacheShard struct {
@@ -35,8 +35,8 @@ type cacheEntry struct {
 	params    map[string]string
 }
 
-// NewCache は新しいキャッシュを作成します。
-// maxEntriesはキャッシュに格納できるエントリの最大数です。
+// NewCache creates a new cache.
+// maxEntries is the maximum number of entries that can be stored in the cache.
 func NewCache(maxEntries int) *Cache {
 	c := &Cache{
 		stopChan:   make(chan struct{}),
@@ -51,7 +51,7 @@ func NewCache(maxEntries int) *Cache {
 	return c
 }
 
-// 後方互換性のために残しておく関数
+// Function kept for backward compatibility
 func newCache() *Cache {
 	return NewCache(defaultCacheMaxEntries)
 }
@@ -132,23 +132,23 @@ func (c *Cache) cleanup() {
 	}
 }
 
-// Stop はキャッシュのクリーンアップループを停止します。
-// これはテストやシャットダウン時に呼び出すべきです。
-// このメソッドは複数回呼び出しても安全です。
+// Stop stops the cache cleanup loop.
+// This should be called during testing or shutdown.
+// This method is safe to call multiple times.
 func (c *Cache) Stop() {
-	// 既に停止している場合は何もしない
+	// Do nothing if already stopped
 	if c.stopped.Load() {
 		return
 	}
 
-	// 停止フラグを設定
+	// Set the stopped flag
 	if c.stopped.CompareAndSwap(false, true) {
-		// stopChanを閉じる（一度だけ）
+		// Close stopChan (only once)
 		close(c.stopChan)
 	}
 }
 
-// GetParams はキャッシュからパラメータのみを取得します。
+// GetParams retrieves only the parameters from the cache.
 func (c *Cache) GetParams(key uint64) (map[string]string, bool) {
 	_, params, found := c.GetWithParams(key)
 	return params, found

@@ -5,42 +5,42 @@ import (
 	"testing"
 )
 
-// TestGroupCreation はグループの作成をテストします
+// TestGroupCreation tests the creation of a group
 func TestGroupCreation(t *testing.T) {
-	// 新しいルーターを作成
+	// Create a new router
 	r := NewRouter()
 
-	// グループを作成
+	// Create a group
 	g := r.Group("/api")
 
-	// グループの初期状態をチェック
+	// Check the initial state of the group
 	if g == nil {
-		t.Fatalf("グループの作成に失敗しました")
+		t.Fatalf("Failed to create group")
 	}
 
 	if g.prefix != "/api" {
-		t.Errorf("グループのプレフィックスが異なります。期待値: %s, 実際: %s", "/api", g.prefix)
+		t.Errorf("Group prefix is different. Expected: %s, Actual: %s", "/api", g.prefix)
 	}
 
 	if len(g.middleware) != 0 {
-		t.Errorf("グループのミドルウェアが初期化されていません")
+		t.Errorf("Group middleware is not initialized")
 	}
 
 	if len(g.routes) != 0 {
-		t.Errorf("グループのルートが初期化されていません")
+		t.Errorf("Group routes are not initialized")
 	}
 
 	if g.router != r {
-		t.Errorf("グループのルーターが正しく設定されていません")
+		t.Errorf("Group router is not set correctly")
 	}
 }
 
-// TestGroupWithMiddleware はミドルウェア付きのグループの作成をテストします
+// TestGroupWithMiddleware tests the creation of a group with middleware
 func TestGroupWithMiddleware(t *testing.T) {
-	// 新しいルーターを作成
+	// Create a new router
 	r := NewRouter()
 
-	// テスト用のミドルウェア関数
+	// Test middleware functions
 	middleware1 := func(next HandlerFunc) HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) error {
 			return next(w, r)
@@ -53,21 +53,21 @@ func TestGroupWithMiddleware(t *testing.T) {
 		}
 	}
 
-	// ミドルウェア付きのグループを作成
+	// Create a group with middleware
 	g := r.Group("/api", middleware1, middleware2)
 
-	// グループのミドルウェアをチェック
+	// Check the group's middleware
 	if len(g.middleware) != 2 {
-		t.Errorf("グループのミドルウェアの数が異なります。期待値: %d, 実際: %d", 2, len(g.middleware))
+		t.Errorf("Number of group middleware is different. Expected: %d, Actual: %d", 2, len(g.middleware))
 	}
 }
 
-// TestNestedGroups はネストされたグループの作成をテストします
+// TestNestedGroups tests the creation of nested groups
 func TestNestedGroups(t *testing.T) {
-	// 新しいルーターを作成
+	// Create a new router
 	r := NewRouter()
 
-	// テスト用のミドルウェア関数
+	// Test middleware functions
 	middleware1 := func(next HandlerFunc) HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) error {
 			return next(w, r)
@@ -80,32 +80,32 @@ func TestNestedGroups(t *testing.T) {
 		}
 	}
 
-	// 親グループを作成
+	// Create a parent group
 	parent := r.Group("/api", middleware1)
 
-	// 子グループを作成
+	// Create a child group
 	child := parent.Group("/v1", middleware2)
 
-	// 子グループのプレフィックスをチェック
+	// Check the child group's prefix
 	if child.prefix != "/api/v1" {
-		t.Errorf("子グループのプレフィックスが異なります。期待値: %s, 実際: %s", "/api/v1", child.prefix)
+		t.Errorf("Child group prefix is different. Expected: %s, Actual: %s", "/api/v1", child.prefix)
 	}
 
-	// 子グループのミドルウェアをチェック
+	// Check the child group's middleware
 	if len(child.middleware) != 2 {
-		t.Errorf("子グループのミドルウェアの数が異なります。期待値: %d, 実際: %d", 2, len(child.middleware))
+		t.Errorf("Number of child group middleware is different. Expected: %d, Actual: %d", 2, len(child.middleware))
 	}
 }
 
-// TestGroupUse はグループへのミドルウェア追加をテストします
+// TestGroupUse tests adding middleware to a group
 func TestGroupUse(t *testing.T) {
-	// 新しいルーターを作成
+	// Create a new router
 	r := NewRouter()
 
-	// グループを作成
+	// Create a group
 	g := r.Group("/api")
 
-	// テスト用のミドルウェア関数
+	// Test middleware functions
 	middleware1 := func(next HandlerFunc) HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) error {
 			return next(w, r)
@@ -118,84 +118,84 @@ func TestGroupUse(t *testing.T) {
 		}
 	}
 
-	// ミドルウェアを追加
+	// Add middleware
 	g.Use(middleware1)
 	g.Use(middleware2)
 
-	// グループのミドルウェアをチェック
+	// Check the group's middleware
 	if len(g.middleware) != 2 {
-		t.Errorf("グループのミドルウェアの数が異なります。期待値: %d, 実際: %d", 2, len(g.middleware))
+		t.Errorf("Number of group middleware is different. Expected: %d, Actual: %d", 2, len(g.middleware))
 	}
 }
 
-// TestGroupRoute はグループのRouteメソッドをテストします
+// TestGroupRoute tests the Route method of a group
 func TestGroupRoute(t *testing.T) {
-	// 新しいルーターを作成
+	// Create a new router
 	r := NewRouter()
 
-	// グループを作成
+	// Create a group
 	g := r.Group("/api")
 
-	// テスト用のハンドラ関数
+	// Test handler function
 	handler := func(w http.ResponseWriter, r *http.Request) error {
 		return nil
 	}
 
-	// テスト用のミドルウェア関数
+	// Test middleware function
 	middleware := func(next HandlerFunc) HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) error {
 			return next(w, r)
 		}
 	}
 
-	// ルートを作成
+	// Create a route
 	route := g.Route(http.MethodGet, "/users", handler, middleware)
 
-	// ルートをチェック
+	// Check the route
 	if route == nil {
-		t.Fatalf("ルートの作成に失敗しました")
+		t.Fatalf("Failed to create route")
 	}
 
 	if route.method != http.MethodGet {
-		t.Errorf("ルートのメソッドが異なります。期待値: %s, 実際: %s", http.MethodGet, route.method)
+		t.Errorf("Route method is different. Expected: %s, Actual: %s", http.MethodGet, route.method)
 	}
 
 	if route.subPath != "/users" {
-		t.Errorf("ルートのパスが異なります。期待値: %s, 実際: %s", "/users", route.subPath)
+		t.Errorf("Route path is different. Expected: %s, Actual: %s", "/users", route.subPath)
 	}
 
 	if route.handler == nil {
-		t.Errorf("ルートのハンドラが設定されていません")
+		t.Errorf("Route handler is not set")
 	}
 
 	if len(route.middleware) != 1 {
-		t.Errorf("ルートのミドルウェアの数が異なります。期待値: %d, 実際: %d", 1, len(route.middleware))
+		t.Errorf("Number of route middleware is different. Expected: %d, Actual: %d", 1, len(route.middleware))
 	}
 
 	if route.group != g {
-		t.Errorf("ルートのグループが正しく設定されていません")
+		t.Errorf("Route group is not set correctly")
 	}
 
-	// グループのルートをチェック
+	// Check the group's routes
 	if len(g.routes) != 1 {
-		t.Errorf("グループのルートの数が異なります。期待値: %d, 実際: %d", 1, len(g.routes))
+		t.Errorf("Number of group routes is different. Expected: %d, Actual: %d", 1, len(g.routes))
 	}
 }
 
-// TestGroupHTTPMethods はグループのHTTPメソッドをテストします
+// TestGroupHTTPMethods tests the HTTP methods of a group
 func TestGroupHTTPMethods(t *testing.T) {
-	// 新しいルーターを作成
+	// Create a new router
 	r := NewRouter()
 
-	// グループを作成
+	// Create a group
 	g := r.Group("/api")
 
-	// テスト用のハンドラ関数
+	// Test handler function
 	handler := func(w http.ResponseWriter, r *http.Request) error {
 		return nil
 	}
 
-	// 各HTTPメソッドのルートを作成
+	// Create routes for each HTTP method
 	getRoute := g.Get("/users", handler)
 	postRoute := g.Post("/users", handler)
 	putRoute := g.Put("/users/{id}", handler)
@@ -204,37 +204,37 @@ func TestGroupHTTPMethods(t *testing.T) {
 	headRoute := g.Head("/users", handler)
 	optionsRoute := g.Options("/users", handler)
 
-	// 各ルートをチェック
+	// Check each route
 	if getRoute == nil || getRoute.method != http.MethodGet {
-		t.Errorf("GETルートが正しく作成されていません")
+		t.Errorf("GET route is not created correctly")
 	}
 
 	if postRoute == nil || postRoute.method != http.MethodPost {
-		t.Errorf("POSTルートが正しく作成されていません")
+		t.Errorf("POST route is not created correctly")
 	}
 
 	if putRoute == nil || putRoute.method != http.MethodPut {
-		t.Errorf("PUTルートが正しく作成されていません")
+		t.Errorf("PUT route is not created correctly")
 	}
 
 	if deleteRoute == nil || deleteRoute.method != http.MethodDelete {
-		t.Errorf("DELETEルートが正しく作成されていません")
+		t.Errorf("DELETE route is not created correctly")
 	}
 
 	if patchRoute == nil || patchRoute.method != http.MethodPatch {
-		t.Errorf("PATCHルートが正しく作成されていません")
+		t.Errorf("PATCH route is not created correctly")
 	}
 
 	if headRoute == nil || headRoute.method != http.MethodHead {
-		t.Errorf("HEADルートが正しく作成されていません")
+		t.Errorf("HEAD route is not created correctly")
 	}
 
 	if optionsRoute == nil || optionsRoute.method != http.MethodOptions {
-		t.Errorf("OPTIONSルートが正しく作成されていません")
+		t.Errorf("OPTIONS route is not created correctly")
 	}
 
-	// グループのルートの数をチェック
+	// Check the number of group routes
 	if len(g.routes) != 7 {
-		t.Errorf("グループのルートの数が異なります。期待値: %d, 実際: %d", 7, len(g.routes))
+		t.Errorf("Number of group routes is different. Expected: %d, Actual: %d", 7, len(g.routes))
 	}
 }

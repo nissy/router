@@ -7,39 +7,39 @@ import (
 	"time"
 )
 
-// TestDoubleArrayTrieCreation はDoubleArrayTrieの作成をテストします
+// TestDoubleArrayTrieCreation tests the creation of a DoubleArrayTrie
 func TestDoubleArrayTrieCreation(t *testing.T) {
-	// 新しいDoubleArrayTrieを作成
+	// Create a new DoubleArrayTrie
 	trie := newDoubleArrayTrie()
 
-	// 初期状態をチェック
+	// Check initial state
 	if trie.size != 1 {
-		t.Errorf("トライのサイズが異なります。期待値: %d, 実際: %d", 1, trie.size)
+		t.Errorf("Trie size is different. Expected: %d, Actual: %d", 1, trie.size)
 	}
 
 	if len(trie.base) < initialTrieSize {
-		t.Errorf("トライのベース配列のサイズが小さすぎます。期待値: %d以上, 実際: %d", initialTrieSize, len(trie.base))
+		t.Errorf("Size of trie base array is too small. Expected: at least %d, Actual: %d", initialTrieSize, len(trie.base))
 	}
 
 	if len(trie.check) < initialTrieSize {
-		t.Errorf("トライのチェック配列のサイズが小さすぎます。期待値: %d以上, 実際: %d", initialTrieSize, len(trie.check))
+		t.Errorf("Size of trie check array is too small. Expected: at least %d, Actual: %d", initialTrieSize, len(trie.check))
 	}
 
 	if len(trie.handler) < initialTrieSize {
-		t.Errorf("トライのハンドラ配列のサイズが小さすぎます。期待値: %d以上, 実際: %d", initialTrieSize, len(trie.handler))
+		t.Errorf("Size of trie handler array is too small. Expected: at least %d, Actual: %d", initialTrieSize, len(trie.handler))
 	}
 
 	if trie.base[rootNode] != baseOffset {
-		t.Errorf("ルートノードのベース値が異なります。期待値: %d, 実際: %d", baseOffset, trie.base[rootNode])
+		t.Errorf("Base value of root node is different. Expected: %d, Actual: %d", baseOffset, trie.base[rootNode])
 	}
 }
 
-// TestStaticRouteAdditionAndSearch は静的ルートの追加と検索をテストします
+// TestStaticRouteAdditionAndSearch tests adding and searching static routes
 func TestStaticRouteAdditionAndSearch(t *testing.T) {
-	// 新しいDoubleArrayTrieを作成
+	// Create a new DoubleArrayTrie
 	trie := newDoubleArrayTrie()
 
-	// テスト用のハンドラ関数
+	// Test handler functions
 	handler1 := func(w http.ResponseWriter, r *http.Request) error {
 		return nil
 	}
@@ -48,99 +48,99 @@ func TestStaticRouteAdditionAndSearch(t *testing.T) {
 		return nil
 	}
 
-	// ルートを追加
+	// Add routes
 	if err := trie.Add("/", handler1); err != nil {
-		t.Fatalf("ルートパスの追加に失敗しました: %v", err)
+		t.Fatalf("Failed to add root path: %v", err)
 	}
 
 	if err := trie.Add("/users", handler2); err != nil {
-		t.Fatalf("ユーザーパスの追加に失敗しました: %v", err)
+		t.Fatalf("Failed to add users path: %v", err)
 	}
 
-	// ルートを検索
+	// Search routes
 	h1 := trie.Search("/")
 	if h1 == nil {
-		t.Fatalf("ルートパスが見つかりませんでした")
+		t.Fatalf("Root path not found")
 	}
 
 	h2 := trie.Search("/users")
 	if h2 == nil {
-		t.Fatalf("ユーザーパスが見つかりませんでした")
+		t.Fatalf("Users path not found")
 	}
 
-	// 存在しないパスを検索
+	// Search non-existent path
 	h3 := trie.Search("/notfound")
 	if h3 != nil {
-		t.Fatalf("存在しないパスが見つかりました")
+		t.Fatalf("Non-existent path was found")
 	}
 }
 
-// TestDuplicateRouteAddition は重複ルートの追加をテストします
+// TestDuplicateRouteAddition tests adding duplicate routes
 func TestDuplicateRouteAddition(t *testing.T) {
-	// 新しいDoubleArrayTrieを作成
+	// Create a new DoubleArrayTrie
 	trie := newDoubleArrayTrie()
 
-	// テスト用のハンドラ関数
+	// Test handler function
 	handler := func(w http.ResponseWriter, r *http.Request) error {
 		return nil
 	}
 
-	// 最初のルートを追加
+	// Add first route
 	if err := trie.Add("/users", handler); err != nil {
-		t.Fatalf("ルートの追加に失敗しました: %v", err)
+		t.Fatalf("Failed to add route: %v", err)
 	}
 
-	// 同じルートを再度追加
+	// Add the same route again
 	err := trie.Add("/users", handler)
 	if err == nil {
-		t.Fatalf("重複ルートの追加が成功しました")
+		t.Fatalf("Adding duplicate route succeeded")
 	}
 
-	// エラーの種類をチェック
+	// Check error type
 	routerErr, ok := err.(*RouterError)
 	if !ok {
-		t.Fatalf("期待されるエラータイプではありません: %T", err)
+		t.Fatalf("Not the expected error type: %T", err)
 	}
 
 	if routerErr.Code != ErrInvalidPattern {
-		t.Errorf("エラーコードが異なります。期待値: %d, 実際: %d", ErrInvalidPattern, routerErr.Code)
+		t.Errorf("Error code is different. Expected: %d, Actual: %d", ErrInvalidPattern, routerErr.Code)
 	}
 }
 
-// TestLongPathAddition は長いパスの追加をテストします
+// TestLongPathAddition tests adding a long path
 func TestLongPathAddition(t *testing.T) {
-	// 新しいDoubleArrayTrieを作成
+	// Create a new DoubleArrayTrie
 	trie := newDoubleArrayTrie()
 
-	// テスト用のハンドラ関数
+	// Test handler function
 	handler := func(w http.ResponseWriter, r *http.Request) error {
 		return nil
 	}
 
-	// 長いパスを追加
+	// Add a long path
 	longPath := "/users/profile/settings/notifications/email/daily"
 	if err := trie.Add(longPath, handler); err != nil {
-		t.Fatalf("長いパスの追加に失敗しました: %v", err)
+		t.Fatalf("Failed to add long path: %v", err)
 	}
 
-	// パスを検索
+	// Search path
 	h := trie.Search(longPath)
 	if h == nil {
-		t.Fatalf("長いパスが見つかりませんでした")
+		t.Fatalf("Long path not found")
 	}
 }
 
-// TestTrieExpansion はトライ木の配列拡張をテストします
+// TestTrieExpansion tests array expansion of the trie
 func TestTrieExpansion(t *testing.T) {
-	// 新しいDoubleArrayTrieを作成
+	// Create a new DoubleArrayTrie
 	trie := newDoubleArrayTrie()
 
-	// テスト用のハンドラ関数
+	// Test handler function
 	handler := func(w http.ResponseWriter, r *http.Request) error {
 		return nil
 	}
 
-	// 複数のパスを追加して配列の拡張をテスト
+	// Add multiple paths to test array expansion
 	paths := []string{
 		"/patho" + fmt.Sprintf("%d", time.Now().UnixNano()),
 		"/pathx" + fmt.Sprintf("%d", time.Now().UnixNano()),
@@ -150,73 +150,73 @@ func TestTrieExpansion(t *testing.T) {
 
 	for _, path := range paths {
 		if err := trie.Add(path, handler); err != nil {
-			t.Fatalf("ルートの追加に失敗しました: %v", err)
+			t.Fatalf("Failed to add route: %v", err)
 		}
 	}
 
-	// 追加したパスを検索
+	// Search added paths
 	for _, path := range paths {
 		h := trie.Search(path)
 		if h == nil {
-			t.Errorf("パス %s が見つかりませんでした", path)
+			t.Errorf("Path %s not found", path)
 		}
 	}
 }
 
-// TestEmptyPathAddition は空のパスの追加をテストします
+// TestEmptyPathAddition tests adding an empty path
 func TestEmptyPathAddition(t *testing.T) {
-	// 新しいDoubleArrayTrieを作成
+	// Create a new DoubleArrayTrie
 	trie := newDoubleArrayTrie()
 
-	// テスト用のハンドラ関数
+	// Test handler function
 	handler := func(w http.ResponseWriter, r *http.Request) error {
 		return nil
 	}
 
-	// 空のパスを追加
+	// Add empty path
 	err := trie.Add("", handler)
 	if err == nil {
-		t.Fatalf("空のパスの追加が成功しました")
+		t.Fatalf("Adding empty path succeeded")
 	}
 
-	// エラーの種類をチェック
+	// Check error type
 	routerErr, ok := err.(*RouterError)
 	if !ok {
-		t.Fatalf("期待されるエラータイプではありません: %T", err)
+		t.Fatalf("Not the expected error type: %T", err)
 	}
 
 	if routerErr.Code != ErrInvalidPattern {
-		t.Errorf("エラーコードが異なります。期待値: %d, 実際: %d", ErrInvalidPattern, routerErr.Code)
+		t.Errorf("Error code is different. Expected: %d, Actual: %d", ErrInvalidPattern, routerErr.Code)
 	}
 }
 
-// TestNilHandlerAddition はnilハンドラの追加をテストします
+// TestNilHandlerAddition tests adding a nil handler
 func TestNilHandlerAddition(t *testing.T) {
-	// 新しいDoubleArrayTrieを作成
+	// Create a new DoubleArrayTrie
 	trie := newDoubleArrayTrie()
 
-	// nilハンドラを追加
+	// Add nil handler
 	err := trie.Add("/test-nil-handler", nil)
 
-	// エラーが発生することを確認
+	// Verify that an error occurs
 	if err == nil {
-		t.Fatalf("nilハンドラの追加が成功しました")
+		t.Fatalf("Adding nil handler succeeded")
 	}
 
-	// エラータイプを確認
+	// Check error type
 	routerErr, ok := err.(*RouterError)
 	if !ok {
-		t.Fatalf("期待されるエラータイプではありません: %T", err)
+		t.Fatalf("Not the expected error type: %T", err)
 	}
 
-	// エラーコードを確認
+	// Check error code
 	if routerErr.Code != ErrInvalidPattern {
-		t.Errorf("エラーコードが異なります。期待値: %d, 実際: %d", ErrInvalidPattern, routerErr.Code)
+		t.Errorf("Error code is different. Expected: %d, Actual: %d", ErrInvalidPattern, routerErr.Code)
 	}
 
-	// エラーメッセージを確認
+	// Check error message
 	expectedMsg := "nil handler is not allowed"
 	if routerErr.Message != expectedMsg {
-		t.Errorf("エラーメッセージが異なります。期待値: %s, 実際: %s", expectedMsg, routerErr.Message)
+		t.Errorf("Error message is different. Expected: %s, Actual: %s", expectedMsg, routerErr.Message)
 	}
 }

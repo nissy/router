@@ -7,53 +7,53 @@ import (
 	"time"
 )
 
-// applyMiddlewareChain はハンドラ関数にミドルウェアチェーンを適用します。
-// ミドルウェアは登録順に適用されます（最初に登録されたものが最初に実行）。
+// applyMiddlewareChain applies middleware chain to a handler function.
+// Middleware is applied in the order of registration (first registered is executed first).
 func applyMiddlewareChain(h HandlerFunc, middleware []MiddlewareFunc) HandlerFunc {
-	// ミドルウェアを登録順に適用
+	// Apply middleware in registration order
 	for i := 0; i < len(middleware); i++ {
 		h = middleware[i](h)
 	}
 	return h
 }
 
-// Route は単一のルートを表します。
-// ミドルウェアを適用するためのインターフェースを提供します。
+// Route represents a single route.
+// It provides an interface for applying middleware.
 type Route struct {
-	group        *Group                                          // このルートが属するグループ（グループに属さない場合はnil）
-	router       *Router                                         // このルートが属するルーター
-	method       string                                          // HTTPメソッド
-	subPath      string                                          // ルートのパス
-	handler      HandlerFunc                                     // ハンドラ関数
-	middleware   []MiddlewareFunc                                // ミドルウェア関数のリスト
-	applied      bool                                            // 既に適用されたかどうか
-	timeout      time.Duration                                   // このルート固有のタイムアウト設定（0の場合はルーターのデフォルト値を使用）
-	errorHandler func(http.ResponseWriter, *http.Request, error) // このルート固有のエラーハンドラ（nilの場合はルーターのデフォルト値を使用）
+	group        *Group                                          // Group this route belongs to (nil if not part of a group)
+	router       *Router                                         // Router this route belongs to
+	method       string                                          // HTTP method
+	subPath      string                                          // Route path
+	handler      HandlerFunc                                     // Handler function
+	middleware   []MiddlewareFunc                                // List of middleware functions
+	applied      bool                                            // Whether already applied
+	timeout      time.Duration                                   // Route-specific timeout setting (uses router default if 0)
+	errorHandler func(http.ResponseWriter, *http.Request, error) // Route-specific error handler
 }
 
-// WithMiddleware はルートに特定のミドルウェアを適用します。
-// ミドルウェアはハンドラ関数に適用され、同じRouteオブジェクトが返されます。
+// WithMiddleware is used to apply specific middleware to a route.
+// Middleware is applied to the handler function and the same Route object is returned.
 func (r *Route) WithMiddleware(middleware ...MiddlewareFunc) *Route {
-	// 既に適用されたルートの場合は、そのまま返す
+	// If the route has already been applied, return it as is
 	if r.applied {
 		return r
 	}
 
-	// ミドルウェアを追加
+	// Add middleware
 	r.middleware = append(r.middleware, middleware...)
 
 	return r
 }
 
-// build はルートを実際にルーターに登録します。
-// このメソッドは明示的に呼び出す必要があります。
-// 重複するルートが検出された場合はエラーを返します。
+// build registers the route with the router.
+// This method must be explicitly called.
+// If duplicate routes are detected, an error is returned.
 func (r *Route) build() error {
 	if r.applied {
 		return nil
 	}
 
-	// ミドルウェアをハンドラに適用
+	// Apply middleware to the handler
 	handler := r.handler
 	if len(r.middleware) > 0 {
 		handler = applyMiddlewareChain(handler, r.middleware)
@@ -61,17 +61,17 @@ func (r *Route) build() error {
 
 	var err error
 
-	// グループに属さないルート（router.Routeで作成されたルート）の場合
+	// If the route does not belong to a group (created by router.Route)
 	if r.group == nil {
-		// ルートを直接ルーターに登録
+		// Register route directly with the router
 		err = r.router.Handle(r.method, r.subPath, handler)
 	} else {
-		// グループに属するルートの場合
+		// If the route belongs to a group
 		fullPath := joinPath(r.group.prefix, normalizePath(r.subPath))
 		err = r.router.Handle(r.method, fullPath, handler)
 	}
 
-	// エラーがなければappliedフラグを設定
+	// If there is no error, set applied flag
 	if err == nil {
 		r.applied = true
 	}
@@ -84,12 +84,12 @@ type Group struct {
 	prefix       string
 	middleware   []MiddlewareFunc
 	routes       []*Route
-	timeout      time.Duration                                   // このグループのタイムアウト設定（0の場合はルーターのデフォルト値を使用）
-	errorHandler func(http.ResponseWriter, *http.Request, error) // このグループのエラーハンドラ（nilの場合はルーターのデフォルト値を使用）
+	timeout      time.Duration                                   // Group-specific timeout setting (uses router default if 0)
+	errorHandler func(http.ResponseWriter, *http.Request, error) // Group-specific error handler
 }
 
-// Group は新しいルートグループを作成します。
-// 指定されたパスプレフィックスを持つGroupを返します。
+// Group creates a new route group.
+// It returns a Group with the specified path prefix.
 func (r *Router) Group(prefix string, middleware ...MiddlewareFunc) *Group {
 	group := &Group{
 		router:       r,
@@ -100,17 +100,17 @@ func (r *Router) Group(prefix string, middleware ...MiddlewareFunc) *Group {
 		errorHandler: nil,
 	}
 
-	// グループをルーターに追加
+	// Add group to the router
 	r.groups = append(r.groups, group)
 
 	return group
 }
 
-// Group は新しいルートグループを作成します。
-// 新しいグループは親グループのパスプレフィックスとミドルウェアを継承し、
-// 追加のパスプレフィックスとミドルウェアを適用します。
+// Group creates a new route group.
+// The new group inherits the path prefix and middleware of the parent group and
+// applies additional path prefix and middleware.
 func (g *Group) Group(prefix string, middleware ...MiddlewareFunc) *Group {
-	// 親グループのミドルウェアと新しいミドルウェアを結合
+	// Combine parent group's middleware and new middleware
 	combinedMiddleware := make([]MiddlewareFunc, len(g.middleware)+len(middleware))
 	copy(combinedMiddleware, g.middleware)
 	copy(combinedMiddleware[len(g.middleware):], middleware)
@@ -123,45 +123,44 @@ func (g *Group) Group(prefix string, middleware ...MiddlewareFunc) *Group {
 	}
 }
 
-// Use はグループに新しいミドルウェアを追加します。
+// Use adds new middleware to the group.
 func (g *Group) Use(middleware ...MiddlewareFunc) *Group {
 	g.middleware = append(g.middleware, middleware...)
 	return g
 }
 
-// Handle はrouterGroupのHandleメソッドの実装です。
-// 指定されたHTTPメソッド、パターン、ハンドラ関数でルートを登録します。
-// パターンにはグループのプレフィックスが自動的に追加され、
-// ハンドラ関数にはグループのミドルウェアが適用されます。
+// Handle is the implementation of routerGroup's Handle method.
+// It registers a route with the specified HTTP method, pattern, and handler function.
+// The pattern automatically includes the group's prefix,
+// and the handler function is applied the group's middleware.
 func (g *Group) Handle(method, subPath string, h HandlerFunc) error {
 	full := joinPath(g.prefix, normalizePath(subPath))
 
-	// グループのミドルウェアをハンドラに適用
+	// Apply group's middleware to the handler
 	h = applyMiddlewareChain(h, g.middleware)
 
 	return g.router.Handle(method, full, h)
 }
 
-// Route は新しいルートを作成しますが、まだ登録はしません。
-// 返されたRouteオブジェクトに対してWithMiddlewareを呼び出すことで、
-// 特定のミドルウェアを適用できます。
-// 重複するルートの処理はルーターの allowRouteOverride オプションによって決まります：
-// - true: 後から登録されたルートが既存のルートを上書きします。
-// - false: 重複するルートが検出された場合、エラーが返されます（デフォルト）。
+// Route creates a new route but does not register it.
+// You can call WithMiddleware on the returned Route object to apply specific middleware.
+// Route duplication processing is determined by the router's allowRouteOverride option:
+// - true: The later registered route overwrites the existing route.
+// - false: If duplicate routes are detected, an error is returned (default)
 func (g *Group) Route(method, subPath string, h HandlerFunc, middleware ...MiddlewareFunc) *Route {
-	// 既存のルートをチェック
+	// Check existing routes
 	normalizedPath := normalizePath(subPath)
 
-	// 重複チェック
+	// Duplicate check
 	for i, existingRoute := range g.routes {
 		if existingRoute.method == method && existingRoute.subPath == normalizedPath {
-			// 重複が見つかった場合
+			// Duplicate found
 			if !g.router.allowRouteOverride {
-				// 警告ログを出力（エラーは返さない - Build時に検出される）
+				// Output warning log (error is not returned - will be detected at build time unless overridden)
 				log.Printf("Warning: duplicate route definition in group: %s %s%s (will cause error at build time unless overridden)",
 					method, g.prefix, normalizedPath)
 			} else {
-				// 上書きモードの場合は、既存のルートを上書き
+				// Overwrite mode case
 				g.routes[i] = &Route{
 					group:        g,
 					router:       g.router,
@@ -174,7 +173,7 @@ func (g *Group) Route(method, subPath string, h HandlerFunc, middleware ...Middl
 					errorHandler: nil,
 				}
 
-				// ミドルウェアを追加
+				// Add middleware
 				if len(middleware) > 0 {
 					g.routes[i].middleware = append(g.routes[i].middleware, middleware...)
 				}
@@ -184,7 +183,7 @@ func (g *Group) Route(method, subPath string, h HandlerFunc, middleware ...Middl
 		}
 	}
 
-	// 新しいルートを作成
+	// Create new route
 	route := &Route{
 		group:        g,
 		router:       g.router,
@@ -197,23 +196,23 @@ func (g *Group) Route(method, subPath string, h HandlerFunc, middleware ...Middl
 		errorHandler: nil,
 	}
 
-	// ミドルウェアを追加
+	// Add middleware
 	if len(middleware) > 0 {
 		route.middleware = append(route.middleware, middleware...)
 	}
 
-	// ルートをグループに追加
+	// Add route to group
 	g.routes = append(g.routes, route)
 
 	return route
 }
 
-// Build はグループ内のすべてのルートを登録します。
-// このメソッドは明示的に呼び出す必要があります。
-// 重複するルートが検出された場合はエラーを返します。
-// 注意: このメソッドは通常、Router.Buildから呼び出されます。
+// Build registers all routes in the group.
+// This method must be explicitly called.
+// If duplicate routes are detected, an error is returned.
+// Note: This method is usually called from Router.Build.
 func (g *Group) Build() error {
-	// ローカルな重複チェック用のマップ（グループ内の重複のみをチェック）
+	// Local duplicate check map (only check within group)
 	routeMap := make(map[string]struct{})
 
 	for _, route := range g.routes {
@@ -221,10 +220,10 @@ func (g *Group) Build() error {
 			continue
 		}
 
-		// 完全なパスを計算
+		// Calculate full path
 		fullPath := joinPath(g.prefix, route.subPath)
 
-		// ローカルな重複チェック
+		// Local duplicate check
 		routeKey := route.method + ":" + fullPath
 		if _, exists := routeMap[routeKey]; exists {
 			return &RouterError{
@@ -241,59 +240,58 @@ func (g *Group) Build() error {
 	return nil
 }
 
-// Get はGETメソッドのルートを作成します。
-// 返されたRouteオブジェクトに対してWithMiddlewareを呼び出すことで、
-// 特定のミドルウェアを適用できます。
+// Get creates a GET route.
+// You can call WithMiddleware on the returned Route object to apply specific middleware.
 func (g *Group) Get(subPath string, h HandlerFunc, middleware ...MiddlewareFunc) *Route {
 	route := g.Route(http.MethodGet, subPath, h, middleware...)
 	return route
 }
 
-// Post はPOSTメソッドのルートを作成します。
+// Post creates a POST route.
 func (g *Group) Post(subPath string, h HandlerFunc, middleware ...MiddlewareFunc) *Route {
 	route := g.Route(http.MethodPost, subPath, h, middleware...)
 	return route
 }
 
-// Put はPUTメソッドのルートを作成します。
+// Put creates a PUT route.
 func (g *Group) Put(subPath string, h HandlerFunc, middleware ...MiddlewareFunc) *Route {
 	route := g.Route(http.MethodPut, subPath, h, middleware...)
 	return route
 }
 
-// Delete はDELETEメソッドのルートを作成します。
+// Delete creates a DELETE route.
 func (g *Group) Delete(subPath string, h HandlerFunc, middleware ...MiddlewareFunc) *Route {
 	route := g.Route(http.MethodDelete, subPath, h, middleware...)
 	return route
 }
 
-// Patch はPATCHメソッドのルートを作成します。
+// Patch creates a PATCH route.
 func (g *Group) Patch(subPath string, h HandlerFunc, middleware ...MiddlewareFunc) *Route {
 	route := g.Route(http.MethodPatch, subPath, h, middleware...)
 	return route
 }
 
-// Head はHEADメソッドのルートを作成します。
+// Head creates a HEAD route.
 func (g *Group) Head(subPath string, h HandlerFunc, middleware ...MiddlewareFunc) *Route {
 	route := g.Route(http.MethodHead, subPath, h, middleware...)
 	return route
 }
 
-// Options はOPTIONSメソッドのルートを作成します。
+// Options creates an OPTIONS route.
 func (g *Group) Options(subPath string, h HandlerFunc, middleware ...MiddlewareFunc) *Route {
 	route := g.Route(http.MethodOptions, subPath, h, middleware...)
 	return route
 }
 
-// WithTimeout はグループに特定のタイムアウト値を設定します。
-// このグループ内のすべてのルートに適用されます（ルート固有の設定がある場合を除く）。
+// WithTimeout sets a specific timeout value for the group.
+// This applies to all routes in the group (except for routes with specific settings)
 func (g *Group) WithTimeout(timeout time.Duration) *Group {
 	g.timeout = timeout
 	return g
 }
 
-// GetTimeout はグループのタイムアウト設定を返します。
-// グループ固有の設定がない場合は、ルーターのデフォルト値を返します。
+// GetTimeout returns the group's timeout setting.
+// If the group has no specific setting, the router's default value is returned.
 func (g *Group) GetTimeout() time.Duration {
 	if g.timeout <= 0 {
 		return g.router.GetRequestTimeout()
@@ -301,20 +299,20 @@ func (g *Group) GetTimeout() time.Duration {
 	return g.timeout
 }
 
-// WithErrorHandler はグループに特定のエラーハンドラを設定します。
-// このグループ内のすべてのルートに適用されます（ルート固有の設定がある場合を除く）。
+// WithErrorHandler sets a specific error handler for the group.
+// This applies to all routes in the group (except for routes with specific settings)
 func (g *Group) WithErrorHandler(handler func(http.ResponseWriter, *http.Request, error)) *Group {
 	g.errorHandler = handler
 	return g
 }
 
-// GetErrorHandler はグループのエラーハンドラを返します。
-// グループ固有の設定がない場合は、ルーターのデフォルト値を返します。
+// GetErrorHandler returns the group's error handler.
+// If the group has no specific setting, the router's default value is returned.
 func (g *Group) GetErrorHandler() func(http.ResponseWriter, *http.Request, error) {
 	if g.errorHandler != nil {
 		return g.errorHandler
 	}
-	return g.router.GetErrorHandler() // ルーターのGetErrorHandlerはnilの場合defaultErrorHandlerを返す
+	return g.router.GetErrorHandler() // router's GetErrorHandler returns defaultErrorHandler if nil
 }
 
 func normalizePath(path string) string {
@@ -324,7 +322,7 @@ func normalizePath(path string) string {
 	if !strings.HasPrefix(path, "/") {
 		path = "/" + path
 	}
-	// 末尾が "/" で、かつルートではない場合は削除
+	// If the path ends with "/" and is not a route, remove it
 	if len(path) > 1 && path[len(path)-1] == '/' {
 		path = path[:len(path)-1]
 	}
@@ -338,22 +336,22 @@ func joinPath(p1, p2 string) string {
 	return p1 + p2
 }
 
-// WithTimeout はルートに特定のタイムアウト値を設定します。
-// タイムアウトが0以下の場合は、ルーターのデフォルト値が使用されます。
+// WithTimeout sets a specific timeout value for the route.
+// If the timeout is 0 or less, the router's default value is used.
 func (r *Route) WithTimeout(timeout time.Duration) *Route {
-	// 既に適用されたルートの場合は、そのまま返す
+	// If the route has already been applied, return it as is
 	if r.applied {
 		return r
 	}
 
-	// タイムアウトを設定
+	// Set timeout
 	r.timeout = timeout
 
 	return r
 }
 
-// GetTimeout はルートのタイムアウト設定を返します。
-// ルート固有の設定がない場合は、ルーターのデフォルト値を返します。
+// GetTimeout returns the route's timeout setting.
+// If the route has no specific setting, the router's default value is returned.
 func (r *Route) GetTimeout() time.Duration {
 	if r.timeout <= 0 {
 		return r.router.GetRequestTimeout()
@@ -361,23 +359,23 @@ func (r *Route) GetTimeout() time.Duration {
 	return r.timeout
 }
 
-// WithErrorHandler はルートに特定のエラーハンドラを設定します。
-// エラーハンドラがnilの場合は、グループまたはルーターのデフォルト値が使用されます。
+// WithErrorHandler sets a specific error handler for the route.
+// If the error handler is nil, the default value of the group or router is used.
 func (r *Route) WithErrorHandler(handler func(http.ResponseWriter, *http.Request, error)) *Route {
-	// 既に適用されたルートの場合は、そのまま返す
+	// If the route has already been applied, return it as is
 	if r.applied {
 		return r
 	}
 
-	// エラーハンドラを設定
+	// Set error handler
 	r.errorHandler = handler
 
 	return r
 }
 
-// GetErrorHandler はルートのエラーハンドラを返します。
-// ルート固有の設定がない場合は、グループまたはルーターのデフォルト値を返します。
-// すべてnilの場合はデフォルトのエラーハンドラを返します。
+// GetErrorHandler returns the route's error handler.
+// If the route has no specific setting, the default value of the group or router is returned.
+// If all are nil, the default error handler is returned.
 func (r *Route) GetErrorHandler() func(http.ResponseWriter, *http.Request, error) {
 	if r.errorHandler != nil {
 		return r.errorHandler
@@ -385,5 +383,5 @@ func (r *Route) GetErrorHandler() func(http.ResponseWriter, *http.Request, error
 	if r.group != nil && r.group.GetErrorHandler() != nil {
 		return r.group.GetErrorHandler()
 	}
-	return r.router.GetErrorHandler() // ルーターのGetErrorHandlerはnilの場合defaultErrorHandlerを返す
+	return r.router.GetErrorHandler() // router's GetErrorHandler returns defaultErrorHandler if nil
 }

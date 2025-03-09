@@ -7,90 +7,140 @@ import (
 	"net/http/httptest"
 	"os"
 	"runtime"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 )
 
-// getTestPathPrefix は各テスト用の一意のパスプレフィックスを生成します
+// Helper functions for testing
+
+// getTestPathPrefix generates a unique path prefix for each test
 func getTestPathPrefix() string {
-	// 時間ベースの一意の識別子を使用
+	// Use a time-based unique identifier
 	return fmt.Sprintf("/test-%d", time.Now().UnixNano())
 }
 
-// TestBasicFunctionality は基本的な機能をテストします
+// assertResponse verifies if the HTTP response is as expected
+func assertResponse(t *testing.T, w *httptest.ResponseRecorder, expectedStatus int, expectedBody string) {
+	t.Helper()
+
+	if w.Code != expectedStatus {
+		t.Errorf("Status code is different from expected. Expected: %d, Actual: %d", expectedStatus, w.Code)
+	}
+
+	if w.Body.String() != expectedBody {
+		t.Errorf("Response body is different from expected. Expected: %q, Actual: %q", expectedBody, w.Body.String())
+	}
+}
+
+// executeRequest executes an HTTP request and returns the response
+func executeRequest(t *testing.T, router *Router, method, path string, body string) *httptest.ResponseRecorder {
+	t.Helper()
+
+	req := httptest.NewRequest(method, path, strings.NewReader(body))
+	if body != "" {
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	}
+
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	return w
+}
+
+// buildRouter builds a router for testing
+func buildRouter(t *testing.T, r *Router) {
+	t.Helper()
+
+	if err := r.Build(); err != nil {
+		t.Fatalf("Failed to build router: %v", err)
+	}
+}
+
+// TestBasicFunctionality tests basic functionality
 func TestBasicFunctionality(t *testing.T) {
 	r := newTestRouter()
 	prefix := getTestPathPrefix()
 
-	// ハンドラを登録
+	// Register handlers
 	r.Get(prefix+"/home", func(w http.ResponseWriter, r *http.Request) error {
-		_, err := w.Write([]byte("ホーム"))
+		_, err := w.Write([]byte("Home"))
 		return err
 	})
 
 	r.Get(prefix+"/users", func(w http.ResponseWriter, r *http.Request) error {
-		_, err := w.Write([]byte("ユーザー一覧"))
+		_, err := w.Write([]byte("User List"))
 		return err
 	})
 
 	r.Post(prefix+"/users-create", func(w http.ResponseWriter, r *http.Request) error {
-		_, err := w.Write([]byte("ユーザー作成"))
+		_, err := w.Write([]byte("User Created"))
 		return err
 	})
 
-	// ルーターをビルド
-	if err := r.Build(); err != nil {
-		t.Fatalf("ルーターのビルドに失敗しました: %v", err)
+	// Build the router
+	buildRouter(t, r)
+
+	// Test cases
+	tests := []struct {
+		name           string
+		method         string
+		path           string
+		expectedStatus int
+		expectedBody   string
+	}{
+		{
+			name:           "GET request - Home",
+			method:         http.MethodGet,
+			path:           prefix + "/home",
+			expectedStatus: http.StatusOK,
+			expectedBody:   "Home",
+		},
+		{
+			name:           "GET request - User List",
+			method:         http.MethodGet,
+			path:           prefix + "/users",
+			expectedStatus: http.StatusOK,
+			expectedBody:   "User List",
+		},
+		{
+			name:           "POST request - User Created",
+			method:         http.MethodPost,
+			path:           prefix + "/users-create",
+			expectedStatus: http.StatusOK,
+			expectedBody:   "User Created",
+		},
+		{
+			name:           "Path not found",
+			method:         http.MethodGet,
+			path:           prefix + "/not-found",
+			expectedStatus: http.StatusNotFound,
+			expectedBody:   "404 page not found\n",
+		},
+		{
+			name:           "Method not allowed",
+			method:         http.MethodDelete,
+			path:           prefix + "/home",
+			expectedStatus: http.StatusOK,
+			expectedBody:   "Home",
+		},
 	}
 
-	// GETリクエストをテスト
-	req := httptest.NewRequest(http.MethodGet, prefix+"/home", nil)
-	w := httptest.NewRecorder()
-	r.ServeHTTP(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Errorf("期待されるステータスコード %d, 実際のステータスコード %d", http.StatusOK, w.Code)
-	}
-
-	if w.Body.String() != "ホーム" {
-		t.Errorf("期待されるレスポンスボディ %s, 実際のレスポンスボディ %s", "ホーム", w.Body.String())
-	}
-
-	// 別のパスをテスト
-	req = httptest.NewRequest(http.MethodGet, prefix+"/users", nil)
-	w = httptest.NewRecorder()
-	r.ServeHTTP(w, req)
-
-	if w.Body.String() != "ユーザー一覧" {
-		t.Errorf("期待されるレスポンスボディ %s, 実際のレスポンスボディ %s", "ユーザー一覧", w.Body.String())
-	}
-
-	// 別のメソッドをテスト
-	req = httptest.NewRequest(http.MethodPost, prefix+"/users-create", nil)
-	w = httptest.NewRecorder()
-	r.ServeHTTP(w, req)
-
-	if w.Body.String() != "ユーザー作成" {
-		t.Errorf("期待されるレスポンスボディ %s, 実際のレスポンスボディ %s", "ユーザー作成", w.Body.String())
-	}
-
-	// 存在しないパスをテスト
-	req = httptest.NewRequest(http.MethodGet, prefix+"/not-found", nil)
-	w = httptest.NewRecorder()
-	r.ServeHTTP(w, req)
-
-	if w.Code != http.StatusNotFound {
-		t.Errorf("期待されるステータスコード %d, 実際のステータスコード %d", http.StatusNotFound, w.Code)
+	// Execute each test case
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			w := executeRequest(t, r, tc.method, tc.path, "")
+			assertResponse(t, w, tc.expectedStatus, tc.expectedBody)
+		})
 	}
 }
 
-// TestMiddlewareExecution はミドルウェアの実行順序をテストします
+// TestMiddlewareExecution tests the execution order of middleware
 func TestMiddlewareExecution(t *testing.T) {
-	// 実行順序を記録するためのスライス
+	// Slice to record execution order
 	executionOrder := []string{}
 
-	// ミドルウェア関数を作成
+	// Create middleware functions
 	middleware1 := func(next HandlerFunc) HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) error {
 			executionOrder = append(executionOrder, "middleware1")
@@ -105,183 +155,183 @@ func TestMiddlewareExecution(t *testing.T) {
 		}
 	}
 
-	// ハンドラ関数
+	// Handler function
 	handler := func(w http.ResponseWriter, r *http.Request) error {
 		executionOrder = append(executionOrder, "handler")
 		return nil
 	}
 
-	// ミドルウェアチェーンを構築
+	// Build middleware chain
 	finalHandler := applyMiddlewareChain(handler, []MiddlewareFunc{middleware1, middleware2})
 
-	// ハンドラを実行
+	// Execute handler
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	w := httptest.NewRecorder()
 	err := finalHandler(w, req)
 	if err != nil {
-		t.Fatalf("ハンドラの実行中にエラーが発生しました: %v", err)
+		t.Fatalf("Error occurred during handler execution: %v", err)
 	}
 
-	// 実行順序を確認
+	// Verify execution order
 	expectedOrder := []string{"middleware2", "middleware1", "handler"}
 	for i, step := range expectedOrder {
 		if i >= len(executionOrder) || executionOrder[i] != step {
-			t.Errorf("実行順序が異なります。期待値: %v, 実際: %v", expectedOrder, executionOrder)
+			t.Errorf("Execution order is different. Expected: %v, Actual: %v", expectedOrder, executionOrder)
 			break
 		}
 	}
 }
 
-// TestShutdown はシャットダウン機能をテストします
+// TestShutdown tests the shutdown functionality
 func TestShutdown(t *testing.T) {
 	r := newTestRouter()
 	prefix := getTestPathPrefix()
 
-	// シャットダウンフラグ
+	// Shutdown flag
 	isShutdown := false
 	shutdownMu := sync.Mutex{}
 
-	// シャットダウンハンドラを設定
+	// Set shutdown handler
 	r.SetShutdownHandler(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusServiceUnavailable)
-		_, _ = w.Write([]byte("シャットダウン中")) // エラーは無視（シャットダウンハンドラではエラーを返せない）
+		_, _ = w.Write([]byte("Shutting down")) // Ignore errors (shutdown handler cannot return errors)
 		shutdownMu.Lock()
 		isShutdown = true
 		shutdownMu.Unlock()
 	})
 
-	// 通常のハンドラを登録
+	// Register normal handler
 	r.Get(prefix+"/test", func(w http.ResponseWriter, r *http.Request) error {
-		_, err := w.Write([]byte("テスト"))
+		_, err := w.Write([]byte("Test"))
 		return err
 	})
 
-	// ルーターをビルド
+	// Build the router
 	if err := r.Build(); err != nil {
-		t.Fatalf("ルーターのビルドに失敗しました: %v", err)
+		t.Fatalf("Failed to build router: %v", err)
 	}
 
-	// シャットダウンを開始
+	// Start shutdown
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 	go func() {
 		if err := r.Shutdown(ctx); err != nil {
-			t.Errorf("シャットダウン中にエラーが発生しました: %v", err)
+			t.Errorf("Error occurred during shutdown: %v", err)
 		}
 	}()
 
-	// シャットダウンが完了するまで少し待機
+	// Wait a bit for shutdown to complete
 	time.Sleep(10 * time.Millisecond)
 
-	// リクエストをテスト
+	// Test request
 	req := httptest.NewRequest(http.MethodGet, prefix+"/test", nil)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
-	// シャットダウン中のレスポンスを確認
+	// Verify response during shutdown
 	if w.Code != http.StatusServiceUnavailable {
-		t.Errorf("期待されるステータスコード %d, 実際のステータスコード %d", http.StatusServiceUnavailable, w.Code)
+		t.Errorf("Expected status code %d, actual status code %d", http.StatusServiceUnavailable, w.Code)
 	}
 
-	if w.Body.String() != "シャットダウン中" {
-		t.Errorf("期待されるレスポンスボディ %s, 実際のレスポンスボディ %s", "シャットダウン中", w.Body.String())
+	if w.Body.String() != "Shutting down" {
+		t.Errorf("Expected response body %s, actual response body %s", "Shutting down", w.Body.String())
 	}
 
-	// シャットダウンハンドラが呼び出されたことを確認
+	// Verify that shutdown handler was called
 	shutdownMu.Lock()
 	if !isShutdown {
-		t.Error("シャットダウンハンドラが呼び出されていません")
+		t.Error("Shutdown handler was not called")
 	}
 	shutdownMu.Unlock()
 }
 
-// TestParamsExtraction はパラメータの抽出をテストします
+// TestParamsExtraction tests parameter extraction
 func TestParamsExtraction(t *testing.T) {
-	// パラメータオブジェクトを作成
+	// Create parameter object
 	params := NewParams()
 
-	// パラメータを追加
+	// Add parameters
 	params.Add("id", "123")
 	params.Add("name", "test")
 
-	// パラメータの数をチェック
+	// Check number of parameters
 	if params.Len() != 2 {
-		t.Errorf("パラメータの数が異なります。期待値: %d, 実際: %d", 2, params.Len())
+		t.Errorf("Number of parameters is different. Expected: %d, Actual: %d", 2, params.Len())
 	}
 
-	// パラメータの値をチェック
+	// Check parameter values
 	if val, ok := params.Get("id"); !ok || val != "123" {
-		t.Errorf("パラメータ id の値が異なります。期待値: %s, 実際: %s", "123", val)
+		t.Errorf("Value of parameter id is different. Expected: %s, Actual: %s", "123", val)
 	}
 
 	if val, ok := params.Get("name"); !ok || val != "test" {
-		t.Errorf("パラメータ name の値が異なります。期待値: %s, 実際: %s", "test", val)
+		t.Errorf("Value of parameter name is different. Expected: %s, Actual: %s", "test", val)
 	}
 
-	// 存在しないパラメータをチェック
+	// Check non-existent parameter
 	if _, ok := params.Get("notfound"); ok {
-		t.Errorf("存在しないパラメータが見つかりました")
+		t.Errorf("Found a non-existent parameter")
 	}
 
-	// パラメータをリセット
+	// Reset parameters
 	params.reset()
 
-	// リセット後のパラメータの数をチェック
+	// Check number of parameters after reset
 	if params.Len() != 0 {
-		t.Errorf("リセット後のパラメータの数が異なります。期待値: %d, 実際: %d", 0, params.Len())
+		t.Errorf("Number of parameters after reset is different. Expected: %d, Actual: %d", 0, params.Len())
 	}
 
-	// パラメータをプールに返却
+	// Return parameters to the pool
 	PutParams(params)
 }
 
-// TestDynamicRouting は動的ルーティングをテストします
+// TestDynamicRouting tests dynamic routing
 func TestDynamicRouting(t *testing.T) {
-	// 新しいノードを作成
+	// Create a new node
 	node := NewNode("")
 
-	// テスト用のハンドラ関数
+	// Test handler function
 	handler := func(w http.ResponseWriter, r *http.Request) error {
 		return nil
 	}
 
-	// ルートを追加
+	// Add route
 	segments := []string{"users", "{id}"}
 	if err := node.AddRoute(segments, handler); err != nil {
-		t.Fatalf("ルートの追加に失敗しました: %v", err)
+		t.Fatalf("Failed to add route: %v", err)
 	}
 
-	// パラメータオブジェクトを作成
+	// Create parameter object
 	params := NewParams()
 
-	// ルートをマッチング
+	// Match route
 	h, matched := node.Match("/users/123", params)
 
-	// マッチングをチェック
+	// Check matching
 	if !matched || h == nil {
-		t.Fatalf("ルートがマッチしませんでした")
+		t.Fatalf("Route did not match")
 	}
 
-	// パラメータをチェック
+	// Check parameters
 	if val, ok := params.Get("id"); !ok || val != "123" {
-		t.Errorf("パラメータ id の値が異なります。期待値: %s, 実際: %s", "123", val)
+		t.Errorf("Value of parameter id is different. Expected: %s, Actual: %s", "123", val)
 	}
 
-	// パラメータをプールに返却
+	// Return parameters to the pool
 	PutParams(params)
 }
 
-// TestRequestTimeout はリクエストタイムアウト機能をテストします
+// TestRequestTimeout tests the request timeout functionality
 func TestRequestTimeout(t *testing.T) {
-	// タイムアウト処理は環境依存のため、スキップします
-	t.Skip("タイムアウト処理のテストは環境依存のため、スキップします")
+	// Skip timeout tests as they are environment dependent
+	t.Skip("Timeout processing tests are skipped because they are environment dependent")
 }
 
 func TestMiddleware(t *testing.T) {
 	r := newTestRouter()
-	groupPrefix := getTestPathPrefix() // グループ用に別のプレフィックスを使用
+	groupPrefix := getTestPathPrefix() // Use a separate prefix for the group
 
-	// グローバルミドルウェアを追加
+	// Add global middleware
 	r.Use(func(next HandlerFunc) HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) error {
 			w.Header().Set("X-Global", "true")
@@ -289,10 +339,10 @@ func TestMiddleware(t *testing.T) {
 		}
 	})
 
-	// グループを作成
+	// Create a group
 	g := r.Group(groupPrefix + "/api")
 
-	// グループミドルウェアを追加
+	// Add group middleware
 	g.Use(func(next HandlerFunc) HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) error {
 			w.Header().Set("X-Group", "true")
@@ -300,46 +350,46 @@ func TestMiddleware(t *testing.T) {
 		}
 	})
 
-	// ルートを追加（テスト毎に一意のパスを使用）
+	// Add route (use a unique path for each test)
 	routePath := "/middleware-test-" + fmt.Sprintf("%d", time.Now().UnixNano())
 
-	// ルートを直接登録
+	// Register route directly
 	fullPath := groupPrefix + "/api" + routePath
 	if err := r.Handle(http.MethodGet, fullPath, func(w http.ResponseWriter, r *http.Request) error {
-		_, err := w.Write([]byte("テスト"))
+		_, err := w.Write([]byte("Test"))
 		return err
 	}); err != nil {
-		t.Fatalf("ルートの登録に失敗しました: %v", err)
+		t.Fatalf("Failed to register route: %v", err)
 	}
 
-	// ルーターをビルド
+	// Build the router
 	if err := r.Build(); err != nil {
-		t.Fatalf("ルーターのビルドに失敗しました: %v", err)
+		t.Fatalf("Failed to build router: %v", err)
 	}
 
-	// リクエストをテスト
+	// Test request
 	req := httptest.NewRequest(http.MethodGet, fullPath, nil)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
-	// ステータスコードを確認
+	// Verify status code
 	if w.Code != http.StatusOK {
-		t.Errorf("期待されるステータスコード %d, 実際のステータスコード %d", http.StatusOK, w.Code)
+		t.Errorf("Expected status code %d, actual status code %d", http.StatusOK, w.Code)
 	}
 
-	// レスポンスボディを確認
-	if w.Body.String() != "テスト" {
-		t.Errorf("期待されるレスポンスボディ %s, 実際のレスポンスボディ %s", "テスト", w.Body.String())
+	// Verify response body
+	if w.Body.String() != "Test" {
+		t.Errorf("Expected response body %s, actual response body %s", "Test", w.Body.String())
 	}
 
-	// ヘッダーを確認
+	// Verify headers
 	if w.Header().Get("X-Global") != "true" {
-		t.Errorf("グローバルミドルウェアが適用されていません")
+		t.Errorf("Global middleware was not applied")
 	}
 
-	// グループミドルウェアは適用されないことを確認
+	// Verify that group middleware is not applied
 	if w.Header().Get("X-Group") == "true" {
-		t.Errorf("グループミドルウェアが不要に適用されています")
+		t.Errorf("Group middleware was unnecessarily applied")
 	}
 }
 
@@ -347,11 +397,11 @@ func TestRouteParams(t *testing.T) {
 	r := newTestRouter()
 	prefix := getTestPathPrefix()
 
-	// パラメータを含むルートを登録
+	// Register routes with parameters
 	r.Get(prefix+"/users/{id}", func(w http.ResponseWriter, r *http.Request) error {
 		params := GetParams(r.Context())
 		id, _ := params.Get("id")
-		_, err := w.Write([]byte("ユーザーID: " + id))
+		_, err := w.Write([]byte("User ID: " + id))
 		return err
 	})
 
@@ -359,72 +409,60 @@ func TestRouteParams(t *testing.T) {
 		params := GetParams(r.Context())
 		postID, _ := params.Get("postID")
 		commentID, _ := params.Get("commentID")
-		_, err := w.Write([]byte(fmt.Sprintf("投稿ID: %s, コメントID: %s", postID, commentID)))
+		_, err := w.Write([]byte(fmt.Sprintf("Post ID: %s, Comment ID: %s", postID, commentID)))
 		return err
 	})
 
-	// 正規表現パラメータを含むルートを登録
+	// Regular expression parameter routes
 	r.Get(prefix+"/files/{filename:[a-z0-9]+\\.[a-z]+}", func(w http.ResponseWriter, r *http.Request) error {
 		params := GetParams(r.Context())
 		filename, _ := params.Get("filename")
-		_, err := w.Write([]byte("ファイル名: " + filename))
+		_, err := w.Write([]byte("File name: " + filename))
 		return err
 	})
 
-	// ルーターをビルド
-	if err := r.Build(); err != nil {
-		t.Logf("ルーターのビルドエラー: %v", err)
-		// パスパラメータの形式が正しくない場合は、テストをスキップ
-		t.Skip("パスパラメータの形式が正しくありません。テストをスキップします。")
+	// Build the router
+	buildRouter(t, r)
+
+	// Test cases
+	tests := []struct {
+		name           string
+		path           string
+		expectedStatus int
+		expectedBody   string
+	}{
+		{
+			name:           "Single parameter",
+			path:           prefix + "/users/123",
+			expectedStatus: http.StatusOK,
+			expectedBody:   "User ID: 123",
+		},
+		{
+			name:           "Multiple parameters",
+			path:           prefix + "/posts/456/comments/789",
+			expectedStatus: http.StatusOK,
+			expectedBody:   "Post ID: 456, Comment ID: 789",
+		},
+		{
+			name:           "Regular expression parameter (match)",
+			path:           prefix + "/files/document.txt",
+			expectedStatus: http.StatusOK,
+			expectedBody:   "File name: document.txt",
+		},
+		{
+			name:           "Regular expression parameter (no match)",
+			path:           prefix + "/files/INVALID.TXT",
+			expectedStatus: http.StatusNotFound,
+			expectedBody:   "404 page not found\n",
+		},
 	}
 
-	// 単一パラメータをテスト
-	req := httptest.NewRequest(http.MethodGet, prefix+"/users/123", nil)
-	w := httptest.NewRecorder()
-	r.ServeHTTP(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Errorf("期待されるステータスコード %d, 実際のステータスコード %d", http.StatusOK, w.Code)
-	}
-
-	if w.Body.String() != "ユーザーID: 123" {
-		t.Errorf("期待されるレスポンスボディ %s, 実際のレスポンスボディ %s", "ユーザーID: 123", w.Body.String())
-	}
-
-	// 複数パラメータをテスト
-	req = httptest.NewRequest(http.MethodGet, prefix+"/posts/456/comments/789", nil)
-	w = httptest.NewRecorder()
-	r.ServeHTTP(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Errorf("期待されるステータスコード %d, 実際のステータスコード %d", http.StatusOK, w.Code)
-	}
-
-	expectedBody := "投稿ID: 456, コメントID: 789"
-	if w.Body.String() != expectedBody {
-		t.Errorf("期待されるレスポンスボディ %s, 実際のレスポンスボディ %s", expectedBody, w.Body.String())
-	}
-
-	// 正規表現パラメータをテスト
-	req = httptest.NewRequest(http.MethodGet, prefix+"/files/document.txt", nil)
-	w = httptest.NewRecorder()
-	r.ServeHTTP(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Errorf("期待されるステータスコード %d, 実際のステータスコード %d", http.StatusOK, w.Code)
-	}
-
-	if w.Body.String() != "ファイル名: document.txt" {
-		t.Errorf("期待されるレスポンスボディ %s, 実際のレスポンスボディ %s", "ファイル名: document.txt", w.Body.String())
-	}
-
-	// 正規表現に一致しないパラメータをテスト
-	req = httptest.NewRequest(http.MethodGet, prefix+"/files/INVALID.TXT", nil)
-	w = httptest.NewRecorder()
-	r.ServeHTTP(w, req)
-
-	if w.Code != http.StatusNotFound {
-		t.Errorf("期待されるステータスコード %d, 実際のステータスコード %d", http.StatusNotFound, w.Code)
+	// Execute each test case
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			w := executeRequest(t, r, http.MethodGet, tc.path, "")
+			assertResponse(t, w, tc.expectedStatus, tc.expectedBody)
+		})
 	}
 }
 
@@ -432,130 +470,132 @@ func TestErrorHandling(t *testing.T) {
 	r := newTestRouter()
 	prefix := getTestPathPrefix()
 
-	// エラーハンドラを設定
+	// Set error handler
 	r.SetErrorHandler(func(w http.ResponseWriter, r *http.Request, err error) {
 		w.WriteHeader(http.StatusInternalServerError)
-		_, _ = w.Write([]byte(fmt.Sprintf("エラーが発生しました: %v", err))) // エラーは無視（エラーハンドラではエラーを返せない）
+		_, _ = w.Write([]byte(fmt.Sprintf("Error occurred: %v", err))) // Ignore error (error handler cannot return error)
 	})
 
-	// エラーを返すハンドラを登録
+	// Register route to return error
 	r.Get(prefix+"/error", func(w http.ResponseWriter, r *http.Request) error {
-		return fmt.Errorf("テストエラー")
+		return fmt.Errorf("Test error")
 	})
 
-	// 正常なハンドラを登録
+	// Register normal handler
 	r.Get(prefix+"/success", func(w http.ResponseWriter, r *http.Request) error {
-		_, err := w.Write([]byte("成功"))
+		_, err := w.Write([]byte("Success"))
 		return err
 	})
 
-	// ルーターをビルド
-	if err := r.Build(); err != nil {
-		t.Fatalf("ルーターのビルドに失敗しました: %v", err)
+	// Build the router
+	buildRouter(t, r)
+
+	// Test cases
+	tests := []struct {
+		name           string
+		path           string
+		expectedStatus int
+		expectedBody   string
+	}{
+		{
+			name:           "Route returning error",
+			path:           prefix + "/error",
+			expectedStatus: http.StatusInternalServerError,
+			expectedBody:   "Error occurred: Test error",
+		},
+		{
+			name:           "Normal handler",
+			path:           prefix + "/success",
+			expectedStatus: http.StatusOK,
+			expectedBody:   "Success",
+		},
+		{
+			name:           "Non-existent path",
+			path:           prefix + "/not-found",
+			expectedStatus: http.StatusNotFound,
+			expectedBody:   "404 page not found\n",
+		},
 	}
 
-	// エラーを返すハンドラをテスト
-	req := httptest.NewRequest(http.MethodGet, prefix+"/error", nil)
-	w := httptest.NewRecorder()
-	r.ServeHTTP(w, req)
-
-	// ステータスコードを確認
-	if w.Code != http.StatusInternalServerError {
-		t.Errorf("期待されるステータスコード %d, 実際のステータスコード %d", http.StatusInternalServerError, w.Code)
-	}
-
-	// レスポンスボディを確認
-	expectedErrorBody := "エラーが発生しました: テストエラー"
-	if w.Body.String() != expectedErrorBody {
-		t.Errorf("期待されるレスポンスボディ %s, 実際のレスポンスボディ %s", expectedErrorBody, w.Body.String())
-	}
-
-	// 正常なハンドラをテスト
-	req = httptest.NewRequest(http.MethodGet, prefix+"/success", nil)
-	w = httptest.NewRecorder()
-	r.ServeHTTP(w, req)
-
-	// ステータスコードを確認
-	if w.Code != http.StatusOK {
-		t.Errorf("期待されるステータスコード %d, 実際のステータスコード %d", http.StatusOK, w.Code)
-	}
-
-	// レスポンスボディを確認
-	if w.Body.String() != "成功" {
-		t.Errorf("期待されるレスポンスボディ %s, 実際のレスポンスボディ %s", "成功", w.Body.String())
+	// Execute each test case
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			w := executeRequest(t, r, http.MethodGet, tc.path, "")
+			assertResponse(t, w, tc.expectedStatus, tc.expectedBody)
+		})
 	}
 }
 
 func TestRouteTimeout(t *testing.T) {
-	// 新しいテストを作成
-	t.Run("タイムアウト処理のテスト", func(t *testing.T) {
-		// 新しいルーターを作成
+	// Create a new test
+	t.Run("Timeout processing test", func(t *testing.T) {
+		// Create a new router
 		r := NewRouter()
 
-		// タイムアウトハンドラを設定
+		// Set timeout handler
 		timeoutHandlerCalled := false
 		r.SetTimeoutHandler(func(w http.ResponseWriter, r *http.Request) {
 			timeoutHandlerCalled = true
 			w.WriteHeader(http.StatusServiceUnavailable)
-			_, _ = w.Write([]byte("カスタムタイムアウト")) // エラーは無視（タイムアウトハンドラではエラーを返せない）
+			_, _ = w.Write([]byte("Custom timeout")) // Ignore error (timeout handler cannot return error)
 		})
 
-		// タイムアウトを設定（短い時間）
+		// Set timeout (short time)
 		r.SetRequestTimeout(10 * time.Millisecond)
 
-		// タイムアウトするハンドラを登録
+		// Register route to timeout
 		if err := r.Handle(http.MethodGet, "/timeout", func(w http.ResponseWriter, r *http.Request) error {
-			time.Sleep(50 * time.Millisecond) // タイムアウトより長く待機
-			_, err := w.Write([]byte("タイムアウトしないはず"))
+			time.Sleep(50 * time.Millisecond) // Wait longer than timeout
+			_, err := w.Write([]byte("Should not timeout"))
 			return err
 		}); err != nil {
-			t.Fatalf("ルートの登録に失敗しました: %v", err)
+			t.Fatalf("Failed to register route: %v", err)
 		}
 
-		// ルーターをビルド
+		// Build the router
 		if err := r.Build(); err != nil {
-			t.Fatalf("ルーターのビルドに失敗しました: %v", err)
+			t.Fatalf("Failed to build router: %v", err)
 		}
 
-		// タイムアウトするハンドラをテスト
+		// Test route to timeout
 		req := httptest.NewRequest(http.MethodGet, "/timeout", nil)
 		w := httptest.NewRecorder()
 
-		// タイムアウトが発生するまで十分待機
+		// Wait for timeout to occur
 		go r.ServeHTTP(w, req)
-		time.Sleep(100 * time.Millisecond) // タイムアウトが発生するのを待機
+		time.Sleep(100 * time.Millisecond) // Wait for timeout to occur
 
-		// タイムアウトハンドラが呼び出されたことを確認
+		// Verify that timeout handler was called
 		if !timeoutHandlerCalled {
-			t.Errorf("タイムアウトハンドラが呼び出されませんでした")
+			t.Errorf("Timeout handler was not called")
 		}
 
 		if w.Code != http.StatusServiceUnavailable {
-			t.Errorf("期待されるステータスコード %d, 実際のステータスコード %d", http.StatusServiceUnavailable, w.Code)
+			t.Errorf("Expected status code %d, actual status code %d", http.StatusServiceUnavailable, w.Code)
 		}
 	})
 
-	// カスタムタイムアウトのテスト
-	t.Run("カスタムタイムアウトのテスト", func(t *testing.T) {
-		t.Skip("タイムアウト処理のテストは環境依存のため、スキップします")
+	// Custom timeout test
+	t.Run("Custom timeout test", func(t *testing.T) {
+		t.Skip("Timeout processing tests are skipped because they are environment dependent")
 	})
 }
 
 func TestGroupRoutes(t *testing.T) {
-	// 各グループごとに別々のプレフィックスを使用
+	// Use separate prefixes for each group
 	for i := 0; i < 3; i++ {
-		// 各テスト実行ごとに一意のプレフィックスを使用
+		// Use a unique prefix for each test execution
 		prefix := getTestPathPrefix()
 		groupPrefix := fmt.Sprintf("%s/group-%d", prefix, i)
 
-		// 上書き可能な設定でルーターを作成
+		// Create router with overrideable settings
 		opts := DefaultRouterOptions()
 		opts.AllowRouteOverride = true
 		r := NewRouterWithOptions(opts)
 
 		group := r.Group(groupPrefix)
 
-		// 各グループ内のルートを登録
+		// Register routes in the group
 		responses := make(map[string]string)
 
 		for j := 0; j < 3; j++ {
@@ -565,47 +605,47 @@ func TestGroupRoutes(t *testing.T) {
 
 			responses[fullPath] = response
 
-			// 各ルートに対して固定の文字列を返す
-			finalResponse := response // ループ変数をキャプチャ
+			// Capture loop variable for final response
+			finalResponse := response // Loop variable is captured
 
-			// Group.Getメソッドを使用してルートを登録
+			// Register route using Group.Get method
 			group.Get(path, func(w http.ResponseWriter, r *http.Request) error {
 				fmt.Fprint(w, finalResponse)
 				return nil
 			})
 		}
 
-		// ルーターをビルド
+		// Build the router
 		if err := r.Build(); err != nil {
-			t.Fatalf("グループ %d のルーターのビルドに失敗しました: %v", i, err)
+			t.Fatalf("Failed to build router for group %d: %v", i, err)
 		}
 
-		// 各ルートをテスト
+		// Test each route
 		for path, expected := range responses {
 			w := httptest.NewRecorder()
 			req, _ := http.NewRequest("GET", path, nil)
 			r.ServeHTTP(w, req)
 
 			if w.Code != 200 {
-				t.Errorf("ルート %s のステータスコードが期待と異なります。期待: 200, 実際: %d", path, w.Code)
+				t.Errorf("Route %s status code is different from expected. Expected: 200, Actual: %d", path, w.Code)
 			}
 
 			if w.Body.String() != expected {
-				t.Errorf("ルート %s のレスポンスが期待と異なります。期待: %q, 実際: %q", path, expected, w.Body.String())
+				t.Errorf("Route %s response is different from expected. Expected: %q, Actual: %q", path, expected, w.Body.String())
 			}
 		}
 	}
 }
 
-// TestConflictingRoutes は競合するルートパターンをテストします
+// TestConflictingRoutes tests conflicting route patterns
 func TestConflictingRoutes(t *testing.T) {
-	// 現在のルーターの実装では、パラメータ名が異なる場合でも同じパスパターンとして扱われないため、
-	// 別のテストケースを使用します
+	// Since the current router implementation does not treat different parameter names as the same path pattern,
+	// Use a different test case
 
 	r := newTestRouter()
 	prefix := getTestPathPrefix()
 
-	// 基本的なルート
+	// Basic route
 	r.Get(prefix+"/users/{id}", func(w http.ResponseWriter, r *http.Request) error {
 		params := GetParams(r.Context())
 		idVal, _ := params.Get("id")
@@ -613,7 +653,7 @@ func TestConflictingRoutes(t *testing.T) {
 		return nil
 	})
 
-	// 同じパスに対して別のHTTPメソッドを使用（これは競合しない）
+	// Use a different HTTP method for the same path (this does not conflict)
 	r.Post(prefix+"/users/{id}", func(w http.ResponseWriter, r *http.Request) error {
 		params := GetParams(r.Context())
 		idVal, _ := params.Get("id")
@@ -621,7 +661,7 @@ func TestConflictingRoutes(t *testing.T) {
 		return nil
 	})
 
-	// 同じパスに対して同じHTTPメソッドを使用（これは競合する）
+	// Use the same HTTP method for the same path (this conflicts)
 	r.Get(prefix+"/users/{id}", func(w http.ResponseWriter, r *http.Request) error {
 		params := GetParams(r.Context())
 		idVal, _ := params.Get("id")
@@ -629,24 +669,24 @@ func TestConflictingRoutes(t *testing.T) {
 		return nil
 	})
 
-	// ビルド時にエラーが発生することを確認
+	// Verify error occurs during build
 	err := r.Build()
 	if err == nil {
-		t.Errorf("競合するルートがあるにもかかわらず、ビルドが成功しました")
+		t.Errorf("Conflicting routes exist but build succeeded")
 	} else {
-		t.Logf("期待通りのエラー: %v", err)
+		t.Logf("Expected error: %v", err)
 	}
 }
 
-// TestRouteOverride は重複するルート登録の処理をテストします。
-// allowRouteOverride オプションが有効な場合と無効な場合の両方をテストします。
+// TestRouteOverride tests route registration override processing
+// allowRouteOverride option is tested both with enabled and disabled cases
 func TestRouteOverride(t *testing.T) {
 	t.Run("WithoutOverride", func(t *testing.T) {
-		// デフォルト設定（上書き不可）でルーターを作成
+		// Create router with default settings (no override)
 		r := NewRouter()
 		prefix := getTestPathPrefix()
 
-		// 最初のルートを登録
+		// Register first route
 		r.Get(prefix+"/users/{id}", func(w http.ResponseWriter, r *http.Request) error {
 			params := GetParams(r.Context())
 			idVal, _ := params.Get("id")
@@ -654,7 +694,7 @@ func TestRouteOverride(t *testing.T) {
 			return nil
 		})
 
-		// 同じパスに対して2つ目のルートを登録
+		// Register second route to the same path
 		r.Get(prefix+"/users/{id}", func(w http.ResponseWriter, r *http.Request) error {
 			params := GetParams(r.Context())
 			idVal, _ := params.Get("id")
@@ -662,23 +702,23 @@ func TestRouteOverride(t *testing.T) {
 			return nil
 		})
 
-		// ビルド時にエラーが発生することを確認
+		// Verify error occurs during build
 		err := r.Build()
 		if err == nil {
-			t.Errorf("重複するルートがあるにもかかわらず、ビルドが成功しました")
+			t.Errorf("Duplicate routes exist but build succeeded")
 		} else {
-			t.Logf("期待通りのエラー: %v", err)
+			t.Logf("Expected error: %v", err)
 		}
 	})
 
 	t.Run("WithOverride", func(t *testing.T) {
-		// 上書き可能な設定でルーターを作成
+		// Create router with override option
 		opts := DefaultRouterOptions()
 		opts.AllowRouteOverride = true
 		r := NewRouterWithOptions(opts)
 		prefix := getTestPathPrefix()
 
-		// 最初のルートを登録
+		// Register first route
 		r.Get(prefix+"/users/{id}", func(w http.ResponseWriter, r *http.Request) error {
 			params := GetParams(r.Context())
 			idVal, _ := params.Get("id")
@@ -686,7 +726,7 @@ func TestRouteOverride(t *testing.T) {
 			return nil
 		})
 
-		// 同じパスに対して2つ目のルートを登録（上書き）
+		// Register second route to the same path (override)
 		r.Get(prefix+"/users/{id}", func(w http.ResponseWriter, r *http.Request) error {
 			params := GetParams(r.Context())
 			idVal, _ := params.Get("id")
@@ -694,34 +734,34 @@ func TestRouteOverride(t *testing.T) {
 			return nil
 		})
 
-		// ビルドが成功することを確認
+		// Verify build succeeds
 		err := r.Build()
 		if err != nil {
-			t.Fatalf("ビルドに失敗しました: %v", err)
+			t.Fatalf("Build failed: %v", err)
 		}
 
-		// 上書きされたルートが使用されることを確認
+		// Verify overridden route is used
 		w := httptest.NewRecorder()
 		req, _ := http.NewRequest("GET", prefix+"/users/123", nil)
 		r.ServeHTTP(w, req)
 
 		expected := "Updated User ID: 123"
 		if w.Body.String() != expected {
-			t.Errorf("期待されるレスポンス: %q, 実際: %q", expected, w.Body.String())
+			t.Errorf("Expected response: %q, Actual: %q", expected, w.Body.String())
 		}
 	})
 
 	t.Run("GroupRouteOverride", func(t *testing.T) {
-		// 上書き可能な設定でルーターを作成
+		// Create router with override option
 		opts := DefaultRouterOptions()
 		opts.AllowRouteOverride = true
 		r := NewRouterWithOptions(opts)
 		prefix := getTestPathPrefix()
 
-		// グループを作成
+		// Create group
 		api := r.Group(prefix + "/api")
 
-		// 最初のルートを登録
+		// Register first route
 		api.Get("/users/{id}", func(w http.ResponseWriter, r *http.Request) error {
 			params := GetParams(r.Context())
 			idVal, _ := params.Get("id")
@@ -729,7 +769,7 @@ func TestRouteOverride(t *testing.T) {
 			return nil
 		})
 
-		// 同じパスに対して2つ目のルートを登録（上書き）
+		// Register second route to the same path (override)
 		api.Get("/users/{id}", func(w http.ResponseWriter, r *http.Request) error {
 			params := GetParams(r.Context())
 			idVal, _ := params.Get("id")
@@ -737,36 +777,36 @@ func TestRouteOverride(t *testing.T) {
 			return nil
 		})
 
-		// ビルドが成功することを確認
+		// Verify build succeeds
 		err := r.Build()
 		if err != nil {
-			t.Fatalf("ビルドに失敗しました: %v", err)
+			t.Fatalf("Build failed: %v", err)
 		}
 
-		// 上書きされたルートが使用されることを確認
+		// Verify overridden route is used
 		w := httptest.NewRecorder()
 		req, _ := http.NewRequest("GET", prefix+"/api/users/123", nil)
 		r.ServeHTTP(w, req)
 
 		expected := "Updated API User ID: 123"
 		if w.Body.String() != expected {
-			t.Errorf("期待されるレスポンス: %q, 実際: %q", expected, w.Body.String())
+			t.Errorf("Expected response: %q, Actual: %q", expected, w.Body.String())
 		}
 	})
 }
 
-// newTestRouter は各テスト用の一意のルーターを作成します
+// newTestRouter creates a unique router for each test
 func newTestRouter() *Router {
-	// 新しいルーターを作成
+	// Create new router
 	r := NewRouter()
 
-	// テスト終了時にルーターをシャットダウンするための遅延処理を設定
+	// Set a defer function to shut down the router when the test ends
 	runtime.SetFinalizer(r, func(r *Router) {
 		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 		defer cancel()
 		if err := r.Shutdown(ctx); err != nil {
-			// finalizerではt.Errorfが使えないため、標準エラー出力に書き込む
-			fmt.Fprintf(os.Stderr, "ルーターのシャットダウン中にエラーが発生しました: %v\n", err)
+			// finalizer cannot use t.Errorf, so write to standard error output
+			fmt.Fprintf(os.Stderr, "Error occurred during router shutdown: %v\n", err)
 		}
 	})
 
@@ -774,13 +814,13 @@ func newTestRouter() *Router {
 }
 
 func TestMain(m *testing.M) {
-	// テスト実行
+	// Run tests
 	code := m.Run()
 
-	// テスト終了時の処理
-	// 各テストで作成されたルーターのキャッシュを停止するための時間を確保
+	// Test end processing
+	// Ensure time for stopping router cache created in tests
 	time.Sleep(100 * time.Millisecond)
 
-	// 終了
+	// Exit
 	os.Exit(code)
 }

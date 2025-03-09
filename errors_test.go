@@ -4,54 +4,54 @@ import (
 	"testing"
 )
 
-// TestRouterError はRouterErrorの作成と文字列変換をテストします
+// TestRouterError tests the creation and string conversion of RouterError
 func TestRouterError(t *testing.T) {
-	// 新しいRouterErrorを作成
+	// Create a new RouterError
 	err := &RouterError{
 		Code:    ErrInvalidPattern,
-		Message: "テストエラーメッセージ",
+		Message: "Test error message",
 	}
 
-	// エラーコードをチェック
+	// Check error code
 	if err.Code != ErrInvalidPattern {
-		t.Errorf("エラーコードが異なります。期待値: %d, 実際: %d", ErrInvalidPattern, err.Code)
+		t.Errorf("Error code is different. Expected: %d, Actual: %d", ErrInvalidPattern, err.Code)
 	}
 
-	// エラーメッセージをチェック
-	if err.Message != "テストエラーメッセージ" {
-		t.Errorf("エラーメッセージが異なります。期待値: %s, 実際: %s", "テストエラーメッセージ", err.Message)
+	// Check error message
+	if err.Message != "Test error message" {
+		t.Errorf("Error message is different. Expected: %s, Actual: %s", "Test error message", err.Message)
 	}
 
-	// エラーの文字列表現をチェック
-	expected := "InvalidPattern: テストエラーメッセージ"
+	// Check string representation of the error
+	expected := "InvalidPattern: Test error message"
 	if err.Error() != expected {
-		t.Errorf("エラーの文字列表現が異なります。期待値: %s, 実際: %s", expected, err.Error())
+		t.Errorf("String representation of the error is different. Expected: %s, Actual: %s", expected, err.Error())
 	}
 }
 
-// TestErrorCodes はエラーコードの定義をテストします
+// TestErrorCodes tests the definition of error codes
 func TestErrorCodes(t *testing.T) {
-	// エラーコードの定義をチェック
+	// Check error code definitions
 	if ErrInvalidPattern != 1 {
-		t.Errorf("ErrInvalidPatternの値が異なります。期待値: %d, 実際: %d", 1, ErrInvalidPattern)
+		t.Errorf("Value of ErrInvalidPattern is different. Expected: %d, Actual: %d", 1, ErrInvalidPattern)
 	}
 
 	if ErrInvalidMethod != 2 {
-		t.Errorf("ErrInvalidMethodの値が異なります。期待値: %d, 実際: %d", 2, ErrInvalidMethod)
+		t.Errorf("Value of ErrInvalidMethod is different. Expected: %d, Actual: %d", 2, ErrInvalidMethod)
 	}
 
 	if ErrNilHandler != 3 {
-		t.Errorf("ErrNilHandlerの値が異なります。期待値: %d, 実際: %d", 3, ErrNilHandler)
+		t.Errorf("Value of ErrNilHandler is different. Expected: %d, Actual: %d", 3, ErrNilHandler)
 	}
 
 	if ErrInternalError != 4 {
-		t.Errorf("ErrInternalErrorの値が異なります。期待値: %d, 実際: %d", 4, ErrInternalError)
+		t.Errorf("Value of ErrInternalError is different. Expected: %d, Actual: %d", 4, ErrInternalError)
 	}
 }
 
-// TestValidateMethod はHTTPメソッドの検証をテストします
+// TestValidateMethod tests the validation of HTTP methods
 func TestValidateMethod(t *testing.T) {
-	// 有効なHTTPメソッド
+	// Valid HTTP methods
 	validMethods := []string{
 		"GET",
 		"POST",
@@ -62,46 +62,46 @@ func TestValidateMethod(t *testing.T) {
 		"OPTIONS",
 	}
 
-	// 無効なHTTPメソッド
+	// Invalid HTTP methods
 	invalidMethods := []string{
 		"",
 		"INVALID",
-		"get", // 小文字は無効
+		"get", // Lowercase is invalid
 		"CONNECT",
 		"TRACE",
 	}
 
-	// 有効なメソッドをテスト
+	// Test valid methods
 	for _, method := range validMethods {
 		err := validateMethod(method)
 		if err != nil {
-			t.Errorf("有効なメソッド %s が無効と判定されました: %v", method, err)
+			t.Errorf("Valid method %s was determined to be invalid: %v", method, err)
 		}
 	}
 
-	// 無効なメソッドをテスト
+	// Test invalid methods
 	for _, method := range invalidMethods {
 		err := validateMethod(method)
 		if err == nil {
-			t.Errorf("無効なメソッド %s が有効と判定されました", method)
+			t.Errorf("Invalid method %s was determined to be valid", method)
 		}
 
-		// エラーの種類をチェック
+		// Check error type
 		routerErr, ok := err.(*RouterError)
 		if !ok {
-			t.Errorf("期待されるエラータイプではありません: %T", err)
+			t.Errorf("Not the expected error type: %T", err)
 			continue
 		}
 
 		if routerErr.Code != ErrInvalidMethod {
-			t.Errorf("エラーコードが異なります。期待値: %d, 実際: %d", ErrInvalidMethod, routerErr.Code)
+			t.Errorf("Error code is different. Expected: %d, Actual: %d", ErrInvalidMethod, routerErr.Code)
 		}
 	}
 }
 
-// TestValidatePattern はルートパターンの検証をテストします
+// TestValidatePattern tests the validation of route patterns
 func TestValidatePattern(t *testing.T) {
-	// 有効なパターン
+	// Valid patterns
 	validPatterns := []string{
 		"/",
 		"/users",
@@ -111,42 +111,42 @@ func TestValidatePattern(t *testing.T) {
 		"/api/v1/users",
 	}
 
-	// 無効なパターン
+	// Invalid patterns
 	invalidPatterns := []string{
-		"", // 空文字列
+		"", // Empty string
 	}
 
-	// 有効なパターンをテスト
+	// Test valid patterns
 	for _, pattern := range validPatterns {
 		err := validatePattern(pattern)
 		if err != nil {
-			t.Errorf("有効なパターン %s が無効と判定されました: %v", pattern, err)
+			t.Errorf("Valid pattern %s was determined to be invalid: %v", pattern, err)
 		}
 	}
 
-	// 無効なパターンをテスト
+	// Test invalid patterns
 	for _, pattern := range invalidPatterns {
 		err := validatePattern(pattern)
 		if err == nil {
-			t.Errorf("無効なパターン %s が有効と判定されました", pattern)
+			t.Errorf("Invalid pattern %s was determined to be valid", pattern)
 		}
 
-		// エラーの種類をチェック
+		// Check error type
 		routerErr, ok := err.(*RouterError)
 		if !ok {
-			t.Errorf("期待されるエラータイプではありません: %T", err)
+			t.Errorf("Not the expected error type: %T", err)
 			continue
 		}
 
 		if routerErr.Code != ErrInvalidPattern {
-			t.Errorf("エラーコードが異なります。期待値: %d, 実際: %d", ErrInvalidPattern, routerErr.Code)
+			t.Errorf("Error code is different. Expected: %d, Actual: %d", ErrInvalidPattern, routerErr.Code)
 		}
 	}
 }
 
-// TestParseSegments はパスセグメントの解析をテストします
+// TestParseSegments tests the parsing of path segments
 func TestParseSegments(t *testing.T) {
-	// テストケース
+	// Test cases
 	tests := []struct {
 		path           string
 		expectedResult []string
@@ -159,28 +159,28 @@ func TestParseSegments(t *testing.T) {
 		{"/api/v1/users", []string{"api", "v1", "users"}},
 	}
 
-	// 各テストケースを実行
+	// Execute each test case
 	for _, tt := range tests {
 		result := parseSegments(tt.path)
 
-		// 結果の長さをチェック
+		// Check the length of the result
 		if len(result) != len(tt.expectedResult) {
-			t.Errorf("パス %s のセグメント数が異なります。期待値: %d, 実際: %d", tt.path, len(tt.expectedResult), len(result))
+			t.Errorf("Number of segments for path %s is different. Expected: %d, Actual: %d", tt.path, len(tt.expectedResult), len(result))
 			continue
 		}
 
-		// 各セグメントをチェック
+		// Check each segment
 		for i, expected := range tt.expectedResult {
 			if result[i] != expected {
-				t.Errorf("パス %s のセグメント %d が異なります。期待値: %s, 実際: %s", tt.path, i, expected, result[i])
+				t.Errorf("Segment %d for path %s is different. Expected: %s, Actual: %s", i, tt.path, expected, result[i])
 			}
 		}
 	}
 }
 
-// TestIsAllStatic はすべてのセグメントが静的かどうかをテストします
+// TestIsAllStatic tests whether all segments are static
 func TestIsAllStatic(t *testing.T) {
-	// テストケース
+	// Test cases
 	tests := []struct {
 		segments       []string
 		expectedResult bool
@@ -194,13 +194,13 @@ func TestIsAllStatic(t *testing.T) {
 		{[]string{"api", "v1", "users"}, true},
 	}
 
-	// 各テストケースを実行
+	// Execute each test case
 	for _, tt := range tests {
 		result := isAllStatic(tt.segments)
 
-		// 結果をチェック
+		// Check the result
 		if result != tt.expectedResult {
-			t.Errorf("セグメント %v の静的判定が異なります。期待値: %t, 実際: %t", tt.segments, tt.expectedResult, result)
+			t.Errorf("Static determination for segments %v is different. Expected: %t, Actual: %t", tt.segments, tt.expectedResult, result)
 		}
 	}
 }

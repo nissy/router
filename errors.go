@@ -48,8 +48,8 @@ func validateMethod(m string) error {
 	}
 }
 
-// validateStaticSegment は、静的セグメントに対して
-// 英数字、ハイフン、アンダースコア、ドットのみが使用されているかをチェックします。
+// validateStaticSegment checks if a static segment contains only
+// alphanumeric characters, hyphens, underscores, and dots.
 func validateStaticSegment(segment string) error {
 	for _, r := range segment {
 		if !unicode.IsLetter(r) && !unicode.IsDigit(r) && r != '-' && r != '_' && r != '.' {
@@ -59,14 +59,14 @@ func validateStaticSegment(segment string) error {
 	return nil
 }
 
-// validatePattern はパターン全体を検証し、各セグメントが静的の場合は validateStaticSegment を適用します。
+// validatePattern validates the entire pattern and applies validateStaticSegment to each segment if it's static.
 func validatePattern(p string) error {
 	if p == "" {
 		return &RouterError{Code: ErrInvalidPattern, Message: "empty pattern"}
 	}
 	segments := parseSegments(p)
 	for _, seg := range segments {
-		// 動的セグメント（{param} や {param:regex}）の場合はチェックしない
+		// Skip checking for dynamic segments ({param} or {param:regex})
 		if !isDynamicSeg(seg) {
 			if err := validateStaticSegment(seg); err != nil {
 				return err

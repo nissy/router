@@ -5,34 +5,34 @@ import (
 	"strings"
 )
 
-// segmentType はURLパスセグメントの種類を表す型です。
+// segmentType is a type representing the kind of URL path segment.
 type segmentType uint8
 
-// セグメントの種類を定義する定数
+// Constants defining segment types
 const (
-	staticSegment segmentType = iota // 静的セグメント（通常の文字列）
-	paramSegment                     // パラメータセグメント（{name}形式）
-	regexSegment                     // 正規表現セグメント（{name:pattern}形式）
+	staticSegment segmentType = iota // Static segment (normal string)
+	paramSegment                     // Parameter segment ({name} format)
+	regexSegment                     // Regular expression segment ({name:pattern} format)
 )
 
-// Node はURLパスの各セグメントを表すノードです。
-// Radixツリーの構造を形成し、ルートマッチングを
-// 効率的に管理するために使用されます。
+// Node represents a segment of a URL path.
+// It forms a Radix tree structure and is used
+// to efficiently manage route matching.
 type Node struct {
-	segment     string         // このノードが表すパスセグメント
-	handler     HandlerFunc    // このノードに関連付けられたハンドラ関数
-	children    []*Node        // 子ノードのリスト
-	segmentType segmentType    // セグメントの種類（静的、パラメータ、正規表現）
-	regex       *regexp.Regexp // 正規表現パターン（segTypeがregexの場合のみ使用）
+	segment     string         // Path segment this node represents
+	handler     HandlerFunc    // Handler function associated with this node
+	children    []*Node        // List of child nodes
+	segmentType segmentType    // Segment type (static, parameter, regular expression)
+	regex       *regexp.Regexp // Regular expression pattern (used only when segType is regex)
 }
 
-// NewNode は新しいノードを作成して返します。
-// パターンを解析し、適切なセグメントタイプを設定します。
-// 正規表現パターンが無効な場合はパニックを発生させます。
+// NewNode creates and returns a new node.
+// It parses the pattern and sets the appropriate segment type.
+// It will panic if the regular expression pattern is invalid.
 func NewNode(pattern string) *Node {
 	n := &Node{
 		segment:  pattern,
-		children: make([]*Node, 0, 8), // 初期容量を8に設定（一般的なケースで十分）
+		children: make([]*Node, 0, 8), // Set initial capacity to 8 (sufficient for common cases)
 	}
 	if err := n.parseSegment(); err != nil {
 		panic(err)
@@ -40,20 +40,20 @@ func NewNode(pattern string) *Node {
 	return n
 }
 
-// AddRoute はルートパターンとハンドラをツリーに追加します。
-// パスセグメントを順に処理し、必要に応じて新しいノードを作成します。
-// 同じパスパターンに対する重複登録はエラーとなります。
-// 異なるパラメータ名を持つ同じパスパターン（例：/users/{id}と/users/{name}）もエラーとなります。
-// 正規表現パターンの競合は許容され、登録順で優先されます。
-// 同一ルート内で同じパラメータ名が複数回使用される場合（例：/users/{id}/posts/{id}）もエラーとなります。
+// AddRoute adds a route pattern and handler to the tree.
+// It processes path segments in order and creates new nodes as needed.
+// Duplicate registration for the same path pattern results in an error.
+// Different parameter names for the same path pattern (e.g., /users/{id} and /users/{name}) also result in an error.
+// Conflicts in regular expression patterns are allowed and prioritized by registration order.
+// Using the same parameter name multiple times in the same route (e.g., /users/{id}/posts/{id}) also results in an error.
 func (n *Node) AddRoute(segments []string, handler HandlerFunc) error {
-	// パラメータ名の重複チェック用のマップ
+	// Map for checking duplicate parameter names
 	return n.addRouteWithParamCheck(segments, handler, make(map[string]struct{}))
 }
 
-// addRouteWithParamCheck は実際のルート追加処理を行い、パラメータ名の重複チェックも行います。
+// addRouteWithParamCheck performs the actual route addition and checks for duplicate parameter names.
 func (n *Node) addRouteWithParamCheck(segments []string, handler HandlerFunc, usedParams map[string]struct{}) error {
-	// 全セグメントを処理し終えた場合、現在のノードにハンドラを設定
+	// If all segments have been processed, set the handler for the current node
 	if len(segments) == 0 {
 		if n.handler != nil {
 			return &RouterError{Code: ErrInvalidPattern, Message: "duplicate pattern"}
@@ -62,10 +62,10 @@ func (n *Node) addRouteWithParamCheck(segments []string, handler HandlerFunc, us
 		return nil
 	}
 
-	// 現在のセグメントを取得
+	// Get the current segment
 	currentSegment := segments[0]
 
-	// パラメータセグメントの場合、パラメータ名の重複チェック
+	// If it's a parameter segment, check for duplicate parameter names
 	if isDynamicSeg(currentSegment) {
 		paramName := extractParamName(currentSegment)
 		if _, exists := usedParams[paramName]; exists {
@@ -74,22 +74,22 @@ func (n *Node) addRouteWithParamCheck(segments []string, handler HandlerFunc, us
 				Message: "duplicate parameter name in route: " + paramName,
 			}
 		}
-		// パラメータ名を使用済みとして記録
+		// Record the parameter name as used
 		usedParams[paramName] = struct{}{}
 	}
 
-	// 既存の子ノードを探索
+	// Search for existing child nodes
 	child := n.findChild(currentSegment)
 
-	// 子ノードが存在する場合、セグメントタイプをチェック
+	// If a child node exists, check the segment type
 	if child != nil {
-		// 新しいノードを一時的に作成してセグメントタイプを取得
+		// Create a temporary node to get the segment type
 		tempNode := NewNode(currentSegment)
 
-		// セグメントタイプが同じで、パターンが異なる場合はエラー
-		// 例: /users/{id} と /users/{name} の競合
+		// If the segment types are the same but the patterns are different, it's an error
+		// Example: /users/{id} and /users/{name} conflict
 		if tempNode.segmentType == paramSegment && child.segmentType == paramSegment && tempNode.segment != child.segment {
-			// パラメータ名を抽出
+			// Extract parameter names
 			tempParamName := extractParamName(tempNode.segment)
 			childParamName := extractParamName(child.segment)
 
@@ -101,7 +101,7 @@ func (n *Node) addRouteWithParamCheck(segments []string, handler HandlerFunc, us
 			}
 		}
 
-		// 静的セグメントと動的セグメントの混在チェック
+		// Check for mixing static segments and dynamic segments
 		if (tempNode.segmentType == staticSegment && (child.segmentType == paramSegment || child.segmentType == regexSegment)) ||
 			((tempNode.segmentType == paramSegment || tempNode.segmentType == regexSegment) && child.segmentType == staticSegment) {
 			return &RouterError{
@@ -110,69 +110,69 @@ func (n *Node) addRouteWithParamCheck(segments []string, handler HandlerFunc, us
 			}
 		}
 
-		// 残りのセグメントを再帰的に処理
+		// Recursively process the remaining segments
 		return child.addRouteWithParamCheck(segments[1:], handler, usedParams)
 	}
 
-	// 子ノードが存在しない場合は新規作成
+	// If no child node exists, create a new one
 	child = NewNode(currentSegment)
 	n.children = append(n.children, child)
 
-	// 残りのセグメントを再帰的に処理
+	// Recursively process the remaining segments
 	return child.addRouteWithParamCheck(segments[1:], handler, usedParams)
 }
 
-// extractParamName はパラメータセグメント（{name}形式）からパラメータ名を抽出します。
+// extractParamName extracts the parameter name from a parameter segment ({name} format).
 func extractParamName(pattern string) string {
-	// パターンが{name}形式であることを前提とする
+	// Assume the pattern is in {name} format
 	if len(pattern) < 3 || pattern[0] != '{' || pattern[len(pattern)-1] != '}' {
 		return ""
 	}
 
-	// コロンがある場合は、コロンまでの部分がパラメータ名
+	// If there's a colon, the part before the colon is the parameter name
 	if colonIdx := strings.IndexByte(pattern, ':'); colonIdx > 0 {
 		return pattern[1:colonIdx]
 	}
 
-	// コロンがない場合は、括弧内全体がパラメータ名
+	// If there's no colon, the entire content inside the braces is the parameter name
 	return pattern[1 : len(pattern)-1]
 }
 
-// Match はパスがこのノードまたはその子ノードに一致するかどうかを判定します。
-// 一致した場合はハンドラ関数とtrueを返し、一致しなかった場合はnilとfalseを返します。
-// パラメータが抽出された場合は、paramsに追加されます。
+// Match checks if the path matches this node or any of its child nodes.
+// If it matches, it returns the handler function and true; if it doesn't, it returns nil and false.
+// If parameters are extracted, they are added to params.
 func (n *Node) Match(path string, params *Params) (HandlerFunc, bool) {
-	// パスが空の場合は現在のノードのハンドラを返す
+	// If the path is empty, return the handler for the current node
 	if path == "" || path == "/" {
 		return n.handler, true
 	}
 
-	// パスの先頭が/の場合は削除
+	// If the path starts with /, remove it
 	if path[0] == '/' {
 		path = path[1:]
 	}
 
-	// 現在のセグメントと残りのパスを抽出
+	// Extract the current segment and the remaining path
 	var currentSegment string
 	var remainingPath string
 
 	slashIndex := strings.IndexByte(path, '/')
 	if slashIndex == -1 {
-		// スラッシュがない場合は、パス全体が現在のセグメント
+		// If there's no slash, the entire path is the current segment
 		currentSegment = path
 		remainingPath = ""
 	} else {
-		// スラッシュがある場合は、スラッシュまでが現在のセグメント
+		// If there's a slash, the part before the slash is the current segment
 		currentSegment = path[:slashIndex]
 		remainingPath = path[slashIndex:]
 	}
 
-	// 子ノードを分類
+	// Classify child nodes
 	var staticMatches []*Node
 	var paramMatches []*Node
 	var regexMatches []*Node
 
-	// 子ノードを一度のループで分類
+	// Classify child nodes in one loop
 	for _, child := range n.children {
 		if child.segmentType == staticSegment && child.segment == currentSegment {
 			staticMatches = append(staticMatches, child)
@@ -183,7 +183,7 @@ func (n *Node) Match(path string, params *Params) (HandlerFunc, bool) {
 		}
 	}
 
-	// 静的セグメントを優先的にマッチング
+	// Match static segments first
 	for _, child := range staticMatches {
 		handler, matched := child.Match(remainingPath, params)
 		if matched {
@@ -191,63 +191,63 @@ func (n *Node) Match(path string, params *Params) (HandlerFunc, bool) {
 		}
 	}
 
-	// パラメータセグメントをマッチング
+	// Match parameter segments
 	for _, child := range paramMatches {
-		// パラメータ名を抽出
+		// Extract parameter name
 		paramName := extractParamName(child.segment)
-		// パラメータを追加
+		// Add parameter
 		params.Add(paramName, currentSegment)
 		handler, matched := child.Match(remainingPath, params)
 		if matched {
 			return handler, true
 		}
-		// マッチしなかった場合はパラメータを削除（バックトラック）
-		// 現在の実装では削除は行わず、上書きする方式を採用
+		// If no match, remove parameter (backtracking)
+		// Current implementation does not remove, uses overwrite method
 	}
 
-	// 正規表現セグメントをマッチング
+	// Match regular expression segments
 	for _, child := range regexMatches {
-		// パラメータ名を抽出
+		// Extract parameter name
 		paramName := extractParamName(child.segment)
-		// パラメータを追加
+		// Add parameter
 		params.Add(paramName, currentSegment)
 		handler, matched := child.Match(remainingPath, params)
 		if matched {
 			return handler, true
 		}
-		// マッチしなかった場合はパラメータを削除（バックトラック）
-		// 現在の実装では削除は行わず、上書きする方式を採用
+		// If no match, remove parameter (backtracking)
+		// Current implementation does not remove, uses overwrite method
 	}
 
-	// マッチするノードが見つからなかった場合
+	// No matching node found
 	return nil, false
 }
 
-// parseSegment はパターン文字列を解析し、セグメントタイプを決定します。
-// また、正規表現セグメントの場合はregexpパターンをコンパイルします。
-// 正規表現パターンが無効な場合はエラーを返します。
+// parseSegment parses the pattern string and determines the segment type.
+// It also compiles the regexp pattern if it's a regular expression segment.
+// It returns an error if the regular expression pattern is invalid.
 func (n *Node) parseSegment() error {
 	pattern := n.segment
 
-	// 空のパターンは静的セグメント
+	// Empty pattern is a static segment
 	if pattern == "" {
 		n.segmentType = staticSegment
 		return nil
 	}
 
-	// パラメータ形式（{param}または{param:regex}）かチェック
+	// Check if it's a parameter format ({param} or {param:regex})
 	if pattern[0] != '{' || pattern[len(pattern)-1] != '}' {
 		n.segmentType = staticSegment
 		return nil
 	}
 
-	// 正規表現パターンの検出（{name:pattern}形式）
+	// Regular expression pattern detection ({name:pattern} format)
 	if colonIdx := strings.IndexByte(pattern, ':'); colonIdx > 0 {
 		n.segmentType = regexSegment
 		regexStr := pattern[colonIdx+1 : len(pattern)-1]
 
-		// 正規表現をコンパイル（^と$を自動追加して完全一致を保証）
-		// 既に ^ と $ が含まれている場合は追加しない
+		// Compile regular expression (add ^ and $ automatically to ensure full match)
+		// If ^ and $ are already included, don't add
 		var completeRegexStr string
 		if !strings.HasPrefix(regexStr, "^") {
 			completeRegexStr = "^" + regexStr
@@ -269,16 +269,16 @@ func (n *Node) parseSegment() error {
 		return nil
 	}
 
-	// 単純なパラメータ（{name}形式）
+	// Simple parameter ({name} format)
 	n.segmentType = paramSegment
 	return nil
 }
 
-// findChild は指定されたパターンに一致する子ノードを探します。
-// 完全一致する子ノードが存在する場合のみ、そのノードを返します。
-// 子ノードの数が多い場合はマップを使用して高速化します。
+// findChild searches for a child node that matches the given pattern.
+// It returns the node if a fully matching child node exists; otherwise, it returns nil.
+// If there are many child nodes, a map is used for faster lookup.
 func (n *Node) findChild(pattern string) *Node {
-	// 子ノードの数が少ない場合は線形探索（最も一般的なケース）
+	// If there are few child nodes, linear search (most common case)
 	if len(n.children) < 8 {
 		for _, child := range n.children {
 			if child.segment == pattern {
@@ -288,7 +288,7 @@ func (n *Node) findChild(pattern string) *Node {
 		return nil
 	}
 
-	// 子ノードの数が多い場合はマップを使用して高速化
+	// If there are many child nodes, use a map for faster lookup
 	childMap := make(map[string]*Node, len(n.children))
 	for _, child := range n.children {
 		childMap[child.segment] = child
@@ -297,18 +297,18 @@ func (n *Node) findChild(pattern string) *Node {
 	return childMap[pattern]
 }
 
-// RemoveRoute は指定されたセグメントパスに一致するルートを削除します。
-// 削除されたルートが存在した場合はtrueを返し、存在しなかった場合はfalseを返します。
+// RemoveRoute removes the route that matches the specified segment path.
+// It returns true if the removed route existed; otherwise, it returns false.
 func (n *Node) RemoveRoute(segments []string) bool {
 	return n.removeRouteInternal(segments, 0, make(map[string]struct{}))
 }
 
-// removeRouteInternal はRemoveRouteの内部実装です。
-// 再帰的にセグメントを処理し、一致するルートを削除します。
+// removeRouteInternal is the internal implementation of RemoveRoute.
+// It recursively processes segments and removes matching routes.
 func (n *Node) removeRouteInternal(segments []string, index int, paramNames map[string]struct{}) bool {
-	// 最後のセグメントに到達した場合
+	// If the last segment is reached
 	if index >= len(segments) {
-		// ハンドラが存在する場合は削除して成功を返す
+		// If a handler exists, remove it and return true
 		if n.handler != nil {
 			n.handler = nil
 			return true
@@ -318,14 +318,14 @@ func (n *Node) removeRouteInternal(segments []string, index int, paramNames map[
 
 	segment := segments[index]
 
-	// 子ノードを検索
+	// Search for child nodes
 	for i, child := range n.children {
-		// 静的セグメントの場合は完全一致
+		// If it's a static segment, check for full match
 		if child.segmentType == staticSegment && child.segment == segment {
-			// 再帰的に削除を試みる
+			// Recursively attempt to remove
 			removed := child.removeRouteInternal(segments, index+1, paramNames)
 
-			// 子ノードのハンドラと子ノードがなくなった場合、子ノード自体を削除
+			// If the child node's handler and child nodes are gone, remove the child node itself
 			if removed && child.handler == nil && len(child.children) == 0 {
 				n.children = append(n.children[:i], n.children[i+1:]...)
 			}
@@ -333,13 +333,13 @@ func (n *Node) removeRouteInternal(segments []string, index int, paramNames map[
 			return removed
 		}
 
-		// パラメータセグメントまたは正規表現セグメントの場合
+		// If it's a parameter segment or regular expression segment
 		if (child.segmentType == paramSegment || child.segmentType == regexSegment) &&
 			(segment[0] == '{' && segment[len(segment)-1] == '}') {
-			// 再帰的に削除を試みる
+			// Recursively attempt to remove
 			removed := child.removeRouteInternal(segments, index+1, paramNames)
 
-			// 子ノードのハンドラと子ノードがなくなった場合、子ノード自体を削除
+			// If the child node's handler and child nodes are gone, remove the child node itself
 			if removed && child.handler == nil && len(child.children) == 0 {
 				n.children = append(n.children[:i], n.children[i+1:]...)
 			}
@@ -348,6 +348,6 @@ func (n *Node) removeRouteInternal(segments []string, index int, paramNames map[
 		}
 	}
 
-	// 一致するノードが見つからなかった場合
+	// No matching node found
 	return false
 }
