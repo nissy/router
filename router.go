@@ -1153,9 +1153,8 @@ func buildGroupErrorHandlerSettings(group *Group, indent int) string {
 // buildRouteErrorHandlerSettings returns the error handler settings for a route as a string
 func buildRouteErrorHandlerSettings(route *Route, indent int) string {
 	indentStr := strings.Repeat("  ", indent)
+	handlerSource := "default"
 
-	// Route settings
-	handlerSource := "inherited"
 	if route.errorHandler != nil {
 		handlerSource = "override"
 	}
