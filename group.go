@@ -1,6 +1,7 @@
 package router
 
 import (
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -144,12 +145,51 @@ func (g *Group) Handle(method, subPath string, h HandlerFunc) error {
 // Route は新しいルートを作成しますが、まだ登録はしません。
 // 返されたRouteオブジェクトに対してWithMiddlewareを呼び出すことで、
 // 特定のミドルウェアを適用できます。
+// 重複するルートの処理はルーターの allowRouteOverride オプションによって決まります：
+// - true: 後から登録されたルートが既存のルートを上書きします。
+// - false: 重複するルートが検出された場合、エラーが返されます（デフォルト）。
 func (g *Group) Route(method, subPath string, h HandlerFunc, middleware ...MiddlewareFunc) *Route {
+	// 既存のルートをチェック
+	normalizedPath := normalizePath(subPath)
+
+	// 重複チェック
+	for i, existingRoute := range g.routes {
+		if existingRoute.method == method && existingRoute.subPath == normalizedPath {
+			// 重複が見つかった場合
+			if !g.router.allowRouteOverride {
+				// 警告ログを出力（エラーは返さない - Build時に検出される）
+				log.Printf("Warning: duplicate route definition in group: %s %s%s (will cause error at build time unless overridden)",
+					method, g.prefix, normalizedPath)
+			} else {
+				// 上書きモードの場合は、既存のルートを上書き
+				g.routes[i] = &Route{
+					group:        g,
+					router:       g.router,
+					method:       method,
+					subPath:      normalizedPath,
+					handler:      h,
+					middleware:   make([]MiddlewareFunc, 0, len(middleware)),
+					applied:      false,
+					timeout:      g.timeout,
+					errorHandler: nil,
+				}
+
+				// ミドルウェアを追加
+				if len(middleware) > 0 {
+					g.routes[i].middleware = append(g.routes[i].middleware, middleware...)
+				}
+
+				return g.routes[i]
+			}
+		}
+	}
+
+	// 新しいルートを作成
 	route := &Route{
 		group:        g,
 		router:       g.router,
 		method:       method,
-		subPath:      normalizePath(subPath),
+		subPath:      normalizedPath,
 		handler:      h,
 		middleware:   make([]MiddlewareFunc, 0, len(middleware)),
 		applied:      false,

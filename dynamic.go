@@ -296,3 +296,58 @@ func (n *Node) findChild(pattern string) *Node {
 
 	return childMap[pattern]
 }
+
+// RemoveRoute は指定されたセグメントパスに一致するルートを削除します。
+// 削除されたルートが存在した場合はtrueを返し、存在しなかった場合はfalseを返します。
+func (n *Node) RemoveRoute(segments []string) bool {
+	return n.removeRouteInternal(segments, 0, make(map[string]struct{}))
+}
+
+// removeRouteInternal はRemoveRouteの内部実装です。
+// 再帰的にセグメントを処理し、一致するルートを削除します。
+func (n *Node) removeRouteInternal(segments []string, index int, paramNames map[string]struct{}) bool {
+	// 最後のセグメントに到達した場合
+	if index >= len(segments) {
+		// ハンドラが存在する場合は削除して成功を返す
+		if n.handler != nil {
+			n.handler = nil
+			return true
+		}
+		return false
+	}
+
+	segment := segments[index]
+
+	// 子ノードを検索
+	for i, child := range n.children {
+		// 静的セグメントの場合は完全一致
+		if child.segmentType == staticSegment && child.segment == segment {
+			// 再帰的に削除を試みる
+			removed := child.removeRouteInternal(segments, index+1, paramNames)
+
+			// 子ノードのハンドラと子ノードがなくなった場合、子ノード自体を削除
+			if removed && child.handler == nil && len(child.children) == 0 {
+				n.children = append(n.children[:i], n.children[i+1:]...)
+			}
+
+			return removed
+		}
+
+		// パラメータセグメントまたは正規表現セグメントの場合
+		if (child.segmentType == paramSegment || child.segmentType == regexSegment) &&
+			(segment[0] == '{' && segment[len(segment)-1] == '}') {
+			// 再帰的に削除を試みる
+			removed := child.removeRouteInternal(segments, index+1, paramNames)
+
+			// 子ノードのハンドラと子ノードがなくなった場合、子ノード自体を削除
+			if removed && child.handler == nil && len(child.children) == 0 {
+				n.children = append(n.children[:i], n.children[i+1:]...)
+			}
+
+			return removed
+		}
+	}
+
+	// 一致するノードが見つからなかった場合
+	return false
+}

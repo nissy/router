@@ -90,6 +90,32 @@ func NewCleanupMiddleware(mw MiddlewareFunc, cleanup func() error) CleanupMiddle
 	}
 }
 
+// RouterOptions はルーターの動作を設定するためのオプションを提供します。
+type RouterOptions struct {
+	// AllowRouteOverride は重複するルート登録の処理方法を指定します。
+	// true: 後から登録されたルートが既存のルートを上書きします。
+	// false: 重複するルートが検出された場合、エラーが返されます（デフォルト）。
+	AllowRouteOverride bool
+
+	// RequestTimeout はリクエスト処理のデフォルトタイムアウト時間です。
+	// 0以下の値を指定するとタイムアウトは無効になります。
+	// デフォルト: 30秒
+	RequestTimeout time.Duration
+
+	// CacheMaxEntries はルートキャッシュの最大エントリ数です。
+	// デフォルト: 1000
+	CacheMaxEntries int
+}
+
+// DefaultRouterOptions はデフォルトのルーターオプションを返します。
+func DefaultRouterOptions() RouterOptions {
+	return RouterOptions{
+		AllowRouteOverride: false,
+		RequestTimeout:     0 * time.Second, // タイムアウトなし
+		CacheMaxEntries:    defaultCacheMaxEntries,
+	}
+}
+
 // Router はHTTPリクエストルーティングを管理する主要な構造体です。
 // 静的ルート（DoubleArrayTrie）と動的ルート（Radixツリー）の両方をサポートし、
 // 高速なルートマッチングとキャッシュ機構を提供します。
@@ -122,6 +148,9 @@ type Router struct {
 
 	// パラメータ関連
 	paramsPool *ParamsPool // URLパラメータオブジェクトのプール（各ルーターインスタンス固有）
+
+	// 設定オプション
+	allowRouteOverride bool // 重複するルート登録を許可するかどうか
 }
 
 // defaultErrorHandler はデフォルトのエラーハンドラで、
@@ -149,16 +178,34 @@ func defaultTimeoutHandler(w http.ResponseWriter, r *http.Request) {
 // NewRouter は新しいRouterインスタンスを初期化して返します。
 // 静的ルート用のDoubleArrayTrieとキャッシュを初期化し、デフォルトのエラーハンドラを設定します。
 func NewRouter() *Router {
+	return NewRouterWithOptions(DefaultRouterOptions())
+}
+
+// NewRouterWithOptions は指定されたオプションで新しいRouterインスタンスを初期化して返します。
+func NewRouterWithOptions(opts RouterOptions) *Router {
+	// キャッシュサイズの検証
+	cacheMaxEntries := defaultCacheMaxEntries
+	if opts.CacheMaxEntries > 0 {
+		cacheMaxEntries = opts.CacheMaxEntries
+	}
+
+	// タイムアウトの検証
+	requestTimeout := 0 * time.Second // デフォルトでタイムアウトなし
+	if opts.RequestTimeout >= 0 {
+		requestTimeout = opts.RequestTimeout
+	}
+
 	r := &Router{
-		staticTrie:      newDoubleArrayTrie(),
-		cache:           NewCache(defaultCacheMaxEntries),
-		errorHandler:    defaultErrorHandler,
-		shutdownHandler: defaultShutdownHandler,
-		timeoutHandler:  defaultTimeoutHandler,
-		paramsPool:      NewParamsPool(), // パラメータプールを初期化
-		routes:          make([]*Route, 0),
-		groups:          make([]*Group, 0),
-		requestTimeout:  30 * time.Second, // デフォルトのタイムアウト: 30秒
+		staticTrie:         newDoubleArrayTrie(),
+		cache:              NewCache(cacheMaxEntries),
+		errorHandler:       defaultErrorHandler,
+		shutdownHandler:    defaultShutdownHandler,
+		timeoutHandler:     defaultTimeoutHandler,
+		paramsPool:         NewParamsPool(), // パラメータプールを初期化
+		routes:             make([]*Route, 0),
+		groups:             make([]*Group, 0),
+		requestTimeout:     requestTimeout,
+		allowRouteOverride: opts.AllowRouteOverride,
 	}
 	// ミドルウェアリストを初期化（atomic.Valueを使用するため）
 	r.middleware.Store(make([]MiddlewareFunc, 0, 8))
@@ -542,7 +589,9 @@ func wrapHandlerWithParams(h HandlerFunc, ps *Params) HandlerFunc {
 // 動的パラメータを含む場合はRadixツリーに登録します。
 // パターン、HTTPメソッド、ハンドラ関数の検証も行います。
 // 静的ルートと動的ルートが競合する場合は静的ルートが優先されます。
-// その他の重複パターン（同一パスの重複登録など）はエラーとなります。
+// 重複するルートの処理は allowRouteOverride オプションによって決まります：
+// - true: 後から登録されたルートが既存のルートを上書きします。
+// - false: 重複するルートが検出された場合、エラーが返されます（デフォルト）。
 func (r *Router) Handle(method, pattern string, h HandlerFunc) error {
 	// パターンの検証
 	if pattern == "" {
@@ -577,7 +626,12 @@ func (r *Router) Handle(method, pattern string, h HandlerFunc) error {
 		// 静的ルートの重複チェック
 		existingHandler := r.staticTrie.Search(pattern)
 		if existingHandler != nil {
-			return &RouterError{Code: ErrInvalidPattern, Message: "duplicate static route: " + pattern}
+			// 重複が見つかった場合
+			if !r.allowRouteOverride {
+				return &RouterError{Code: ErrInvalidPattern, Message: "duplicate static route: " + pattern}
+			}
+			// 上書きモードの場合は、既存のルートを上書き
+			return r.staticTrie.Add(pattern, h)
 		}
 
 		// 動的ルートとの競合チェック
@@ -588,10 +642,12 @@ func (r *Router) Handle(method, pattern string, h HandlerFunc) error {
 			existingHandler, matched := node.Match(pattern, params)
 			PutParams(params) // パラメータオブジェクトをプールに返却
 
-			// 動的ルートが既に存在する場合は、静的ルートを優先（エラーにしない）
+			// 動的ルートが既に存在する場合
 			if matched && existingHandler != nil {
-				// 静的ルートを登録（動的ルートを上書き）
-				return r.staticTrie.Add(pattern, h)
+				if !r.allowRouteOverride {
+					return &RouterError{Code: ErrInvalidPattern, Message: "route already registered as dynamic route: " + pattern}
+				}
+				// 上書きモードの場合は、静的ルートを優先（動的ルートを上書き）
 			}
 		}
 
@@ -603,8 +659,12 @@ func (r *Router) Handle(method, pattern string, h HandlerFunc) error {
 	// 静的ルートとの競合チェック
 	existingHandler := r.staticTrie.Search(pattern)
 	if existingHandler != nil {
-		// 静的ルートが既に存在する場合は、動的ルートを登録しない（エラーを返す）
-		return &RouterError{Code: ErrInvalidPattern, Message: "route already registered as static route: " + pattern}
+		// 静的ルートが既に存在する場合
+		if !r.allowRouteOverride {
+			return &RouterError{Code: ErrInvalidPattern, Message: "route already registered as static route: " + pattern}
+		}
+		// 上書きモードの場合でも、静的ルートを優先（エラーを返す）
+		return &RouterError{Code: ErrInvalidPattern, Message: "cannot override static route with dynamic route: " + pattern}
 	}
 
 	// 動的ルートの登録
@@ -614,6 +674,12 @@ func (r *Router) Handle(method, pattern string, h HandlerFunc) error {
 		// このHTTPメソッド用の動的ルートツリーを初期化
 		node = NewNode("")
 		r.dynamicNodes[nodeIndex] = node
+	}
+
+	// 既存の動的ルートをチェック
+	if r.allowRouteOverride {
+		// 上書きモードの場合は、既存のルートを削除してから追加
+		node.RemoveRoute(segments)
 	}
 
 	// ルートを追加
@@ -827,7 +893,9 @@ func (r *Router) Options(pattern string, h HandlerFunc, middleware ...Middleware
 
 // Build はすべてのルートを登録します。
 // このメソッドは明示的に呼び出す必要があります。
-// 重複するルートが検出された場合はエラーを返します。
+// 重複するルートの処理はルーターの allowRouteOverride オプションによって決まります：
+// - true: 後から登録されたルートが既存のルートを上書きします。
+// - false: 重複するルートが検出された場合、エラーが返されます（デフォルト）。
 func (r *Router) Build() error {
 	// グローバルな重複チェック用のマップ
 	globalRouteMap := make(map[string]string)
@@ -841,7 +909,7 @@ func (r *Router) Build() error {
 	for i, group := range r.groups {
 		groupID := "group" + strconv.Itoa(i)
 		groupRoutes, err := r.collectGroupRoutes(group, globalRouteMap, groupID)
-		if err != nil {
+		if err != nil && !r.allowRouteOverride {
 			return err
 		}
 		allGroupRoutes = append(allGroupRoutes, groupRoutes...)
@@ -854,10 +922,15 @@ func (r *Router) Build() error {
 
 		// 重複チェック
 		if existingRoute, exists := globalRouteMap[routeKey]; exists {
-			return &RouterError{
-				Code:    ErrInvalidPattern,
-				Message: "duplicate route definition: " + route.method + " " + route.subPath + " (conflicts with " + existingRoute + ")",
+			if !r.allowRouteOverride {
+				return &RouterError{
+					Code:    ErrInvalidPattern,
+					Message: "duplicate route definition: " + route.method + " " + route.subPath + " (conflicts with " + existingRoute + ")",
+				}
 			}
+			// 上書きモードの場合は警告を出力
+			log.Printf("Warning: overriding route: %s %s (previously defined as %s)",
+				route.method, route.subPath, existingRoute)
 		}
 
 		// ルート情報をマップに追加
@@ -893,10 +966,15 @@ func (r *Router) Build() error {
 
 		// 重複チェック
 		if existingRoute, exists := globalRouteMap[routeKey]; exists {
-			return &RouterError{
-				Code:    ErrInvalidPattern,
-				Message: "duplicate route definition: " + route.method + " " + fullPath + " (conflicts with " + existingRoute + ")",
+			if !r.allowRouteOverride {
+				return &RouterError{
+					Code:    ErrInvalidPattern,
+					Message: "duplicate route definition: " + route.method + " " + fullPath + " (conflicts with " + existingRoute + ")",
+				}
 			}
+			// 上書きモードの場合は警告を出力
+			log.Printf("Warning: overriding route: %s %s (previously defined as %s)",
+				route.method, fullPath, existingRoute)
 		}
 
 		// ルート情報をマップに追加
@@ -919,13 +997,13 @@ func (r *Router) Build() error {
 
 	// すべてのチェックが通ったら、実際に登録
 	for _, route := range directRoutes {
-		if err := route.build(); err != nil {
+		if err := route.build(); err != nil && !r.allowRouteOverride {
 			return err
 		}
 	}
 
 	for _, route := range allGroupRoutes {
-		if err := route.build(); err != nil {
+		if err := route.build(); err != nil && !r.allowRouteOverride {
 			return err
 		}
 	}

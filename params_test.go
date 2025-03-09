@@ -84,7 +84,7 @@ func TestParamsReset(t *testing.T) {
 // TestParamsPool はパラメータプールをテストします
 func TestParamsPool(t *testing.T) {
 	// 複数のParamsを作成して返却
-	for i := 0; i < 10; i++ {
+	for range make([]struct{}, 10) {
 		params := NewParams()
 		params.Add("id", "123")
 		PutParams(params)
