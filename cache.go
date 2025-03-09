@@ -20,6 +20,7 @@ type Cache struct {
 	cleaning   int32
 	stopChan   chan struct{}
 	maxEntries int
+	stopped    atomic.Bool // キャッシュが停止しているかどうかを追跡
 }
 
 type cacheShard struct {
@@ -133,8 +134,18 @@ func (c *Cache) cleanup() {
 
 // Stop はキャッシュのクリーンアップループを停止します。
 // これはテストやシャットダウン時に呼び出すべきです。
+// このメソッドは複数回呼び出しても安全です。
 func (c *Cache) Stop() {
-	close(c.stopChan)
+	// 既に停止している場合は何もしない
+	if c.stopped.Load() {
+		return
+	}
+
+	// 停止フラグを設定
+	if c.stopped.CompareAndSwap(false, true) {
+		// stopChanを閉じる（一度だけ）
+		close(c.stopChan)
+	}
 }
 
 // GetParams はキャッシュからパラメータのみを取得します。

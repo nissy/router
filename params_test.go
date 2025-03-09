@@ -146,12 +146,12 @@ func TestContextWithParams(t *testing.T) {
 
 // TestGetParamsWithNilContext はnilコンテキストからのパラメータ取得をテストします
 func TestGetParamsWithNilContext(t *testing.T) {
-	// nilコンテキストからパラメータを取得
-	params := GetParams(nil)
+	// nilコンテキストの代わりにcontext.TODO()を使用
+	params := GetParams(context.TODO())
 
 	// パラメータが新しく作成されていることを確認
 	if params == nil {
-		t.Fatalf("nilコンテキストからパラメータを取得できませんでした")
+		t.Fatalf("空のコンテキストからパラメータを取得できませんでした")
 	}
 
 	if params.Len() != 0 {

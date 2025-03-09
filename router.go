@@ -99,7 +99,7 @@ type RouterOptions struct {
 
 	// RequestTimeout はリクエスト処理のデフォルトタイムアウト時間です。
 	// 0以下の値を指定するとタイムアウトは無効になります。
-	// デフォルト: 30秒
+	// デフォルト: 0秒（タイムアウトなし）
 	RequestTimeout time.Duration
 
 	// CacheMaxEntries はルートキャッシュの最大エントリ数です。
@@ -297,6 +297,21 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	// レスポンスラッパーを作成して、書き込み状態を追跡
 	rw := &responseWriter{ResponseWriter: w, status: http.StatusOK}
 
+	// タイムアウト関連の変数を関数の最初で宣言
+	var cancel context.CancelFunc
+	var done chan struct{}
+	var timeoutOccurred atomic.Bool // タイムアウトが発生したかどうかを追跡
+
+	// パニックが発生した場合でもリソースをクリーンアップ
+	defer func() {
+		if cancel != nil {
+			cancel() // コンテキストをキャンセル
+		}
+		if done != nil {
+			close(done) // タイムアウト監視ゴルーチンを終了
+		}
+	}()
+
 	// ハンドラとルートを検索
 	handler, route, found := r.findHandlerAndRoute(req.Method, req.URL.Path)
 	if !found {
@@ -307,8 +322,6 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
 	// 処理時間の制限を設定
 	ctx := req.Context()
-	var cancel context.CancelFunc
-	var timeoutOccurred atomic.Bool // タイムアウトが発生したかどうかを追跡
 
 	// 既存のデッドラインがない場合、設定されたタイムアウトを適用
 	if _, ok := ctx.Deadline(); !ok {
@@ -325,11 +338,11 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		// タイムアウトが設定されている場合のみ適用
 		if timeout > 0 {
 			ctx, cancel = context.WithTimeout(ctx, timeout)
-			defer cancel()
+			defer cancel() // コンテキストリークを防止
 			req = req.WithContext(ctx)
 
 			// コンテキストのキャンセルを監視
-			done := make(chan struct{})
+			done = make(chan struct{})
 
 			// タイムアウト監視ゴルーチン
 			go func() {
@@ -356,8 +369,6 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 					// 正常に処理が完了
 				}
 			}()
-
-			defer close(done) // ゴルーチンリークを防止
 		}
 	}
 
@@ -499,90 +510,6 @@ func (r *Router) findHandlerAndRoute(method, path string) (HandlerFunc, *Route, 
 
 	// ルートが見つからなかった場合
 	return nil, nil, false
-}
-
-// findHandler はHTTPメソッドとパスに一致するハンドラ関数を検索します。
-// 1. キャッシュをチェック
-// 2. 静的ルート（DoubleArrayTrie）をチェック
-// 3. 動的ルート（Radixツリー）をチェック
-// の順で検索し、最初に見つかったハンドラを返します。
-func (r *Router) findHandler(method, path string) (HandlerFunc, bool) {
-	// パスの検証
-	if path == "" || (len(path) > 1 && path[0] != '/') {
-		return nil, false // 無効なパス
-	}
-
-	// HTTPメソッドを数値に変換
-	methodIndex := methodToUint8(method)
-	if methodIndex == 0 {
-		return nil, false // サポートされていないHTTPメソッド
-	}
-
-	// キャッシュキーを生成し、キャッシュをチェック
-	cacheKey := generateRouteKey(methodIndex, path)
-
-	if handler, paramMap, found := r.cache.GetWithParams(cacheKey); found {
-		if paramMap != nil {
-			// キャッシュからパラメータ情報を取得した場合
-			params := NewParams()
-			for k, v := range paramMap {
-				params.Add(k, v)
-			}
-			return wrapHandlerWithParams(handler, params), true
-		}
-		return handler, true
-	}
-
-	// 静的ルートを検索（高速なDoubleArrayTrieを使用）
-	if handler := r.staticTrie.Search(path); handler != nil {
-		// キャッシュに結果を保存（静的ルートにはパラメータなし）
-		r.cache.Set(cacheKey, handler, nil)
-		return handler, true
-	}
-
-	// 動的ルートを検索（Radixツリーを使用）
-	nodeIndex := methodIndex - 1 // 配列インデックスは0から始まるため調整
-	node := r.dynamicNodes[nodeIndex]
-	if node == nil {
-		return nil, false // このHTTPメソッド用の動的ルートが未登録
-	}
-
-	// URLパラメータを格納するオブジェクトを取得
-	params := NewParams()
-	handler, matched := node.Match(path, params)
-
-	if matched && handler != nil {
-		// パラメータ情報をマップに変換
-		paramMap := make(map[string]string)
-		for i := 0; i < len(params.data); i++ {
-			paramMap[params.data[i].key] = params.data[i].value
-		}
-
-		// キャッシュに結果を保存（パラメータ情報も含む）
-		r.cache.Set(cacheKey, handler, paramMap)
-
-		return wrapHandlerWithParams(handler, params), true
-	}
-
-	// マッチしなかった場合はパラメータをプールに返却
-	PutParams(params)
-	return nil, false
-}
-
-// wrapHandlerWithParams はハンドラ関数をラップし、URLパラメータをリクエストコンテキストに
-// 追加します。また、パラメータオブジェクトをプールに返却するための後処理も行います。
-func wrapHandlerWithParams(h HandlerFunc, ps *Params) HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) error {
-		// パラメータをコンテキストに追加
-		ctx := contextWithParams(r.Context(), ps)
-		r = r.WithContext(ctx)
-
-		// ハンドラ実行後にパラメータオブジェクトをプールに返却
-		defer PutParams(ps)
-
-		// 元のハンドラを実行
-		return h(w, r)
-	}
 }
 
 // Handle は新しいルートを登録します。パターンが静的な場合はDoubleArrayTrieに、

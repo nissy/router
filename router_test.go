@@ -25,18 +25,18 @@ func TestBasicFunctionality(t *testing.T) {
 
 	// ハンドラを登録
 	r.Get(prefix+"/home", func(w http.ResponseWriter, r *http.Request) error {
-		w.Write([]byte("ホーム"))
-		return nil
+		_, err := w.Write([]byte("ホーム"))
+		return err
 	})
 
 	r.Get(prefix+"/users", func(w http.ResponseWriter, r *http.Request) error {
-		w.Write([]byte("ユーザー一覧"))
-		return nil
+		_, err := w.Write([]byte("ユーザー一覧"))
+		return err
 	})
 
 	r.Post(prefix+"/users-create", func(w http.ResponseWriter, r *http.Request) error {
-		w.Write([]byte("ユーザー作成"))
-		return nil
+		_, err := w.Write([]byte("ユーザー作成"))
+		return err
 	})
 
 	// ルーターをビルド
@@ -117,7 +117,10 @@ func TestMiddlewareExecution(t *testing.T) {
 	// ハンドラを実行
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	w := httptest.NewRecorder()
-	finalHandler(w, req)
+	err := finalHandler(w, req)
+	if err != nil {
+		t.Fatalf("ハンドラの実行中にエラーが発生しました: %v", err)
+	}
 
 	// 実行順序を確認
 	expectedOrder := []string{"middleware2", "middleware1", "handler"}
@@ -141,7 +144,7 @@ func TestShutdown(t *testing.T) {
 	// シャットダウンハンドラを設定
 	r.SetShutdownHandler(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusServiceUnavailable)
-		w.Write([]byte("シャットダウン中"))
+		_, _ = w.Write([]byte("シャットダウン中")) // エラーは無視（シャットダウンハンドラではエラーを返せない）
 		shutdownMu.Lock()
 		isShutdown = true
 		shutdownMu.Unlock()
@@ -149,8 +152,8 @@ func TestShutdown(t *testing.T) {
 
 	// 通常のハンドラを登録
 	r.Get(prefix+"/test", func(w http.ResponseWriter, r *http.Request) error {
-		w.Write([]byte("テスト"))
-		return nil
+		_, err := w.Write([]byte("テスト"))
+		return err
 	})
 
 	// ルーターをビルド
@@ -161,7 +164,11 @@ func TestShutdown(t *testing.T) {
 	// シャットダウンを開始
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
-	go r.Shutdown(ctx)
+	go func() {
+		if err := r.Shutdown(ctx); err != nil {
+			t.Errorf("シャットダウン中にエラーが発生しました: %v", err)
+		}
+	}()
 
 	// シャットダウンが完了するまで少し待機
 	time.Sleep(10 * time.Millisecond)
@@ -298,10 +305,12 @@ func TestMiddleware(t *testing.T) {
 
 	// ルートを直接登録
 	fullPath := groupPrefix + "/api" + routePath
-	r.Handle(http.MethodGet, fullPath, func(w http.ResponseWriter, r *http.Request) error {
-		w.Write([]byte("テスト"))
-		return nil
-	})
+	if err := r.Handle(http.MethodGet, fullPath, func(w http.ResponseWriter, r *http.Request) error {
+		_, err := w.Write([]byte("テスト"))
+		return err
+	}); err != nil {
+		t.Fatalf("ルートの登録に失敗しました: %v", err)
+	}
 
 	// ルーターをビルド
 	if err := r.Build(); err != nil {
@@ -342,24 +351,24 @@ func TestRouteParams(t *testing.T) {
 	r.Get(prefix+"/users/{id}", func(w http.ResponseWriter, r *http.Request) error {
 		params := GetParams(r.Context())
 		id, _ := params.Get("id")
-		w.Write([]byte("ユーザーID: " + id))
-		return nil
+		_, err := w.Write([]byte("ユーザーID: " + id))
+		return err
 	})
 
 	r.Get(prefix+"/posts/{postID}/comments/{commentID}", func(w http.ResponseWriter, r *http.Request) error {
 		params := GetParams(r.Context())
 		postID, _ := params.Get("postID")
 		commentID, _ := params.Get("commentID")
-		w.Write([]byte(fmt.Sprintf("投稿ID: %s, コメントID: %s", postID, commentID)))
-		return nil
+		_, err := w.Write([]byte(fmt.Sprintf("投稿ID: %s, コメントID: %s", postID, commentID)))
+		return err
 	})
 
 	// 正規表現パラメータを含むルートを登録
 	r.Get(prefix+"/files/{filename:[a-z0-9]+\\.[a-z]+}", func(w http.ResponseWriter, r *http.Request) error {
 		params := GetParams(r.Context())
 		filename, _ := params.Get("filename")
-		w.Write([]byte("ファイル名: " + filename))
-		return nil
+		_, err := w.Write([]byte("ファイル名: " + filename))
+		return err
 	})
 
 	// ルーターをビルド
@@ -426,7 +435,7 @@ func TestErrorHandling(t *testing.T) {
 	// エラーハンドラを設定
 	r.SetErrorHandler(func(w http.ResponseWriter, r *http.Request, err error) {
 		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte(fmt.Sprintf("エラーが発生しました: %v", err)))
+		_, _ = w.Write([]byte(fmt.Sprintf("エラーが発生しました: %v", err))) // エラーは無視（エラーハンドラではエラーを返せない）
 	})
 
 	// エラーを返すハンドラを登録
@@ -436,8 +445,8 @@ func TestErrorHandling(t *testing.T) {
 
 	// 正常なハンドラを登録
 	r.Get(prefix+"/success", func(w http.ResponseWriter, r *http.Request) error {
-		w.Write([]byte("成功"))
-		return nil
+		_, err := w.Write([]byte("成功"))
+		return err
 	})
 
 	// ルーターをビルド
@@ -488,18 +497,20 @@ func TestRouteTimeout(t *testing.T) {
 		r.SetTimeoutHandler(func(w http.ResponseWriter, r *http.Request) {
 			timeoutHandlerCalled = true
 			w.WriteHeader(http.StatusServiceUnavailable)
-			w.Write([]byte("カスタムタイムアウト"))
+			_, _ = w.Write([]byte("カスタムタイムアウト")) // エラーは無視（タイムアウトハンドラではエラーを返せない）
 		})
 
 		// タイムアウトを設定（短い時間）
 		r.SetRequestTimeout(10 * time.Millisecond)
 
 		// タイムアウトするハンドラを登録
-		r.Handle(http.MethodGet, "/timeout", func(w http.ResponseWriter, r *http.Request) error {
+		if err := r.Handle(http.MethodGet, "/timeout", func(w http.ResponseWriter, r *http.Request) error {
 			time.Sleep(50 * time.Millisecond) // タイムアウトより長く待機
-			w.Write([]byte("タイムアウトしないはず"))
-			return nil
-		})
+			_, err := w.Write([]byte("タイムアウトしないはず"))
+			return err
+		}); err != nil {
+			t.Fatalf("ルートの登録に失敗しました: %v", err)
+		}
 
 		// ルーターをビルド
 		if err := r.Build(); err != nil {
@@ -753,7 +764,10 @@ func newTestRouter() *Router {
 	runtime.SetFinalizer(r, func(r *Router) {
 		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 		defer cancel()
-		r.Shutdown(ctx)
+		if err := r.Shutdown(ctx); err != nil {
+			// finalizerではt.Errorfが使えないため、標準エラー出力に書き込む
+			fmt.Fprintf(os.Stderr, "ルーターのシャットダウン中にエラーが発生しました: %v\n", err)
+		}
 	})
 
 	return r
