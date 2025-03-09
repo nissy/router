@@ -3,6 +3,7 @@ package router
 import (
 	"net/http"
 	"strings"
+	"time"
 )
 
 // applyMiddlewareChain はハンドラ関数にミドルウェアチェーンを適用します。
@@ -18,13 +19,15 @@ func applyMiddlewareChain(h HandlerFunc, middleware []MiddlewareFunc) HandlerFun
 // Route は単一のルートを表します。
 // ミドルウェアを適用するためのインターフェースを提供します。
 type Route struct {
-	group      *Group           // このルートが属するグループ（グループに属さない場合はnil）
-	router     *Router          // このルートが属するルーター
-	method     string           // HTTPメソッド
-	subPath    string           // ルートのパス
-	handler    HandlerFunc      // ハンドラ関数
-	middleware []MiddlewareFunc // ミドルウェア関数のリスト
-	applied    bool             // 既に適用されたかどうか
+	group        *Group                                          // このルートが属するグループ（グループに属さない場合はnil）
+	router       *Router                                         // このルートが属するルーター
+	method       string                                          // HTTPメソッド
+	subPath      string                                          // ルートのパス
+	handler      HandlerFunc                                     // ハンドラ関数
+	middleware   []MiddlewareFunc                                // ミドルウェア関数のリスト
+	applied      bool                                            // 既に適用されたかどうか
+	timeout      time.Duration                                   // このルート固有のタイムアウト設定（0の場合はルーターのデフォルト値を使用）
+	errorHandler func(http.ResponseWriter, *http.Request, error) // このルート固有のエラーハンドラ（nilの場合はルーターのデフォルト値を使用）
 }
 
 // WithMiddleware はルートに特定のミドルウェアを適用します。
@@ -55,35 +58,45 @@ func (r *Route) build() error {
 		handler = applyMiddlewareChain(handler, r.middleware)
 	}
 
-	// ルートを登録
-	r.applied = true
+	var err error
 
 	// グループに属さないルート（router.Routeで作成されたルート）の場合
 	if r.group == nil {
 		// ルートを直接ルーターに登録
-		return r.router.Handle(r.method, r.subPath, handler)
+		err = r.router.Handle(r.method, r.subPath, handler)
+	} else {
+		// グループに属するルートの場合
+		fullPath := joinPath(r.group.prefix, normalizePath(r.subPath))
+		err = r.router.Handle(r.method, fullPath, handler)
 	}
 
-	// グループに属するルートの場合
-	fullPath := joinPath(r.group.prefix, normalizePath(r.subPath))
-	return r.router.Handle(r.method, fullPath, handler)
+	// エラーがなければappliedフラグを設定
+	if err == nil {
+		r.applied = true
+	}
+
+	return err
 }
 
 type Group struct {
-	router     *Router
-	prefix     string
-	middleware []MiddlewareFunc
-	routes     []*Route
+	router       *Router
+	prefix       string
+	middleware   []MiddlewareFunc
+	routes       []*Route
+	timeout      time.Duration                                   // このグループのタイムアウト設定（0の場合はルーターのデフォルト値を使用）
+	errorHandler func(http.ResponseWriter, *http.Request, error) // このグループのエラーハンドラ（nilの場合はルーターのデフォルト値を使用）
 }
 
 // Group は新しいルートグループを作成します。
 // 指定されたパスプレフィックスを持つGroupを返します。
 func (r *Router) Group(prefix string, middleware ...MiddlewareFunc) *Group {
 	group := &Group{
-		router:     r,
-		prefix:     normalizePath(prefix),
-		middleware: middleware,
-		routes:     make([]*Route, 0),
+		router:       r,
+		prefix:       normalizePath(prefix),
+		middleware:   middleware,
+		routes:       make([]*Route, 0),
+		timeout:      0,
+		errorHandler: nil,
 	}
 
 	// グループをルーターに追加
@@ -133,13 +146,15 @@ func (g *Group) Handle(method, subPath string, h HandlerFunc) error {
 // 特定のミドルウェアを適用できます。
 func (g *Group) Route(method, subPath string, h HandlerFunc, middleware ...MiddlewareFunc) *Route {
 	route := &Route{
-		group:      g,
-		router:     g.router,
-		method:     method,
-		subPath:    subPath,
-		handler:    h,
-		middleware: make([]MiddlewareFunc, 0, len(middleware)),
-		applied:    false,
+		group:        g,
+		router:       g.router,
+		method:       method,
+		subPath:      normalizePath(subPath),
+		handler:      h,
+		middleware:   make([]MiddlewareFunc, 0, len(middleware)),
+		applied:      false,
+		timeout:      g.timeout,
+		errorHandler: nil,
 	}
 
 	// ミドルウェアを追加
@@ -230,6 +245,38 @@ func (g *Group) Options(subPath string, h HandlerFunc, middleware ...MiddlewareF
 	return route
 }
 
+// WithTimeout はグループに特定のタイムアウト値を設定します。
+// このグループ内のすべてのルートに適用されます（ルート固有の設定がある場合を除く）。
+func (g *Group) WithTimeout(timeout time.Duration) *Group {
+	g.timeout = timeout
+	return g
+}
+
+// GetTimeout はグループのタイムアウト設定を返します。
+// グループ固有の設定がない場合は、ルーターのデフォルト値を返します。
+func (g *Group) GetTimeout() time.Duration {
+	if g.timeout <= 0 {
+		return g.router.GetRequestTimeout()
+	}
+	return g.timeout
+}
+
+// WithErrorHandler はグループに特定のエラーハンドラを設定します。
+// このグループ内のすべてのルートに適用されます（ルート固有の設定がある場合を除く）。
+func (g *Group) WithErrorHandler(handler func(http.ResponseWriter, *http.Request, error)) *Group {
+	g.errorHandler = handler
+	return g
+}
+
+// GetErrorHandler はグループのエラーハンドラを返します。
+// グループ固有の設定がない場合は、ルーターのデフォルト値を返します。
+func (g *Group) GetErrorHandler() func(http.ResponseWriter, *http.Request, error) {
+	if g.errorHandler != nil {
+		return g.errorHandler
+	}
+	return g.router.GetErrorHandler() // ルーターのGetErrorHandlerはnilの場合defaultErrorHandlerを返す
+}
+
 func normalizePath(path string) string {
 	if path == "" {
 		return "/"
@@ -249,4 +296,54 @@ func joinPath(p1, p2 string) string {
 		return p2
 	}
 	return p1 + p2
+}
+
+// WithTimeout はルートに特定のタイムアウト値を設定します。
+// タイムアウトが0以下の場合は、ルーターのデフォルト値が使用されます。
+func (r *Route) WithTimeout(timeout time.Duration) *Route {
+	// 既に適用されたルートの場合は、そのまま返す
+	if r.applied {
+		return r
+	}
+
+	// タイムアウトを設定
+	r.timeout = timeout
+
+	return r
+}
+
+// GetTimeout はルートのタイムアウト設定を返します。
+// ルート固有の設定がない場合は、ルーターのデフォルト値を返します。
+func (r *Route) GetTimeout() time.Duration {
+	if r.timeout <= 0 {
+		return r.router.GetRequestTimeout()
+	}
+	return r.timeout
+}
+
+// WithErrorHandler はルートに特定のエラーハンドラを設定します。
+// エラーハンドラがnilの場合は、グループまたはルーターのデフォルト値が使用されます。
+func (r *Route) WithErrorHandler(handler func(http.ResponseWriter, *http.Request, error)) *Route {
+	// 既に適用されたルートの場合は、そのまま返す
+	if r.applied {
+		return r
+	}
+
+	// エラーハンドラを設定
+	r.errorHandler = handler
+
+	return r
+}
+
+// GetErrorHandler はルートのエラーハンドラを返します。
+// ルート固有の設定がない場合は、グループまたはルーターのデフォルト値を返します。
+// すべてnilの場合はデフォルトのエラーハンドラを返します。
+func (r *Route) GetErrorHandler() func(http.ResponseWriter, *http.Request, error) {
+	if r.errorHandler != nil {
+		return r.errorHandler
+	}
+	if r.group != nil && r.group.GetErrorHandler() != nil {
+		return r.group.GetErrorHandler()
+	}
+	return r.router.GetErrorHandler() // ルーターのGetErrorHandlerはnilの場合defaultErrorHandlerを返す
 }

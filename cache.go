@@ -12,12 +12,14 @@ const (
 	defaultCleanupInterval = time.Minute
 	defaultExpiration      = time.Hour
 	maxEntriesPerShard     = 2048
+	defaultCacheMaxEntries = maxEntriesPerShard * shardCount
 )
 
 type Cache struct {
-	shards   [shardCount]*cacheShard
-	cleaning int32
-	stopChan chan struct{}
+	shards     [shardCount]*cacheShard
+	cleaning   int32
+	stopChan   chan struct{}
+	maxEntries int
 }
 
 type cacheShard struct {
@@ -32,9 +34,12 @@ type cacheEntry struct {
 	params    map[string]string
 }
 
-func newCache() *Cache {
+// NewCache は新しいキャッシュを作成します。
+// maxEntriesはキャッシュに格納できるエントリの最大数です。
+func NewCache(maxEntries int) *Cache {
 	c := &Cache{
-		stopChan: make(chan struct{}),
+		stopChan:   make(chan struct{}),
+		maxEntries: maxEntries,
 	}
 	for i := range c.shards {
 		c.shards[i] = &cacheShard{
@@ -43,6 +48,11 @@ func newCache() *Cache {
 	}
 	go c.cleanupLoop()
 	return c
+}
+
+// 後方互換性のために残しておく関数
+func newCache() *Cache {
+	return NewCache(defaultCacheMaxEntries)
 }
 
 func (c *Cache) Get(key uint64) (HandlerFunc, bool) {
@@ -121,6 +131,14 @@ func (c *Cache) cleanup() {
 	}
 }
 
+// Stop はキャッシュのクリーンアップループを停止します。
+// これはテストやシャットダウン時に呼び出すべきです。
 func (c *Cache) Stop() {
 	close(c.stopChan)
+}
+
+// GetParams はキャッシュからパラメータのみを取得します。
+func (c *Cache) GetParams(key uint64) (map[string]string, bool) {
+	_, params, found := c.GetWithParams(key)
+	return params, found
 }

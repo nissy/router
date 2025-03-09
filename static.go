@@ -39,29 +39,30 @@ func newDoubleArrayTrie() *DoubleArrayTrie {
 	return t
 }
 
-// Add は新しいパスとそのハンドラをトライ木に追加します。
-// パスを文字単位で分解し、各文字に対応するノードを作成または更新します。
+// Add はパスとハンドラ関数をトライ木に追加します。
 // 既に同じパスが登録されている場合はエラーを返します。
-func (t *DoubleArrayTrie) Add(path string, handler HandlerFunc) error {
-	// 入力検証
-	if path == "" {
+func (t *DoubleArrayTrie) Add(path string, h HandlerFunc) error {
+	if len(path) == 0 {
 		return &RouterError{
 			Code:    ErrInvalidPattern,
-			Message: "empty path",
+			Message: "empty path is not allowed",
 		}
 	}
-	if handler == nil {
+
+	// nilハンドラのチェック
+	if h == nil {
 		return &RouterError{
-			Code:    ErrNilHandler,
-			Message: "nil handler",
+			Code:    ErrInvalidPattern,
+			Message: "nil handler is not allowed",
 		}
 	}
 
-	t.mu.Lock()
-	defer t.mu.Unlock()
+	// 既存のパスかどうかをチェック（ロックの外で実行）
+	var existingHandler HandlerFunc
+	t.mu.RLock()
+	existingHandler = t.searchWithoutLock(path)
+	t.mu.RUnlock()
 
-	// 既存のパスかどうかをチェック
-	existingHandler := t.Search(path)
 	if existingHandler != nil {
 		// Router.Handle メソッドで既に重複チェックを行っているため、
 		// ここでのエラーは通常発生しないはずですが、安全のために実装しています。
@@ -71,41 +72,121 @@ func (t *DoubleArrayTrie) Add(path string, handler HandlerFunc) error {
 		}
 	}
 
-	// ルートノードから開始
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	// パスを文字単位で処理
 	currentNode := rootNode
+	for i := 0; i < len(path); i++ {
+		c := path[i]
+		baseVal := t.base[currentNode]
 
-	// パスの各文字に対してノードを作成または更新
-	for i := range path {
-		char := path[i]
-		nextNode := t.base[currentNode] + int32(char)
+		// 現在のノードにまだ子ノードがない場合
+		if baseVal == 0 {
+			// 新しいbaseの値を計算
+			nextNode := currentNode + int32(c) + 1
 
-		// 配列サイズの拡張が必要な場合
-		if nextNode >= int32(len(t.check)) {
-			if err := t.expand(nextNode + 1); err != nil {
-				return err
+			// 必要に応じてbase配列を拡張
+			if nextNode >= int32(len(t.base)) {
+				// 配列サイズを計算（最低でも2倍、必要に応じてさらに大きく）
+				newSize := int32(len(t.base)) * 2
+				if nextNode >= newSize {
+					newSize = nextNode + 1024 // 余裕を持たせる
+				}
+
+				// 配列を拡張
+				if err := t.expand(newSize); err != nil {
+					return err
+				}
+			}
+
+			// 新しい遷移を設定
+			t.base[currentNode] = nextNode - int32(c)
+			t.check[nextNode] = currentNode
+			currentNode = nextNode
+		} else {
+			// 既存のbaseの値を使用して次のノードを計算
+			nextNode := baseVal + int32(c)
+
+			// 必要に応じてbase配列を拡張
+			if nextNode >= int32(len(t.base)) {
+				// 配列サイズを計算（最低でも2倍、必要に応じてさらに大きく）
+				newSize := int32(len(t.base)) * 2
+				if nextNode >= newSize {
+					newSize = nextNode + 1024 // 余裕を持たせる
+				}
+
+				// 配列を拡張
+				if err := t.expand(newSize); err != nil {
+					return err
+				}
+			}
+
+			// 遷移先が未使用か確認
+			if t.check[nextNode] == 0 {
+				// 未使用なら設定
+				t.check[nextNode] = currentNode
+				currentNode = nextNode
+			} else if t.check[nextNode] == currentNode {
+				// 既に同じ親から同じ文字で遷移する場合は問題なし
+				currentNode = nextNode
+			} else {
+				// 衝突が発生した場合は、新しいbaseの値を探す
+				newBase := t.findBase([]byte(path[i:]))
+				if newBase < 0 {
+					return &RouterError{
+						Code:    ErrInternalError,
+						Message: "failed to find new base value",
+					}
+				}
+
+				// 既存の子ノードを新しい位置に移動
+				oldBase := t.base[currentNode]
+				for ch := byte(0); ch < 128; ch++ { // ASCII文字のみサポート
+					oldNext := oldBase + int32(ch)
+					if oldNext < int32(len(t.check)) && t.check[oldNext] == currentNode {
+						// 既存の子ノードを見つけた
+						newNext := newBase + int32(ch)
+
+						// 必要に応じて配列を拡張
+						if newNext >= int32(len(t.base)) {
+							newSize := int32(len(t.base)) * 2
+							if newNext >= newSize {
+								newSize = newNext + 1024
+							}
+							if err := t.expand(newSize); err != nil {
+								return err
+							}
+						}
+
+						// 子ノードを新しい位置に移動
+						t.base[newNext] = t.base[oldNext]
+						t.check[newNext] = currentNode
+
+						// 古い位置をクリア
+						t.check[oldNext] = 0
+					}
+				}
+
+				// 現在のノードのbaseを更新
+				t.base[currentNode] = newBase
+
+				// 新しい遷移を追加
+				nextNode = newBase + int32(c)
+				t.check[nextNode] = currentNode
+				currentNode = nextNode
 			}
 		}
-
-		// 親子関係が不一致の場合（未使用または別の親を持つ）
-		if t.check[nextNode] != currentNode {
-			// 新しいbase値を探索
-			newBase := t.findBase([]byte(path[i:]))
-			if newBase <= 0 {
-				return &RouterError{Code: ErrInternalError, Message: "failed to find base value"}
-			}
-
-			// 親ノードのbase値を更新
-			t.base[currentNode] = newBase
-			nextNode = newBase + int32(char)
-		}
-
-		// 親子関係を設定
-		t.check[nextNode] = currentNode
-		currentNode = nextNode
 	}
 
-	// パスの終端にハンドラを設定
-	t.handler[currentNode] = handler
+	// 終端ノードにハンドラを設定
+	if int(currentNode) >= len(t.handler) {
+		// ハンドラ配列も拡張
+		newHandlers := make([]HandlerFunc, len(t.base))
+		copy(newHandlers, t.handler)
+		t.handler = newHandlers
+	}
+	t.handler[currentNode] = h
 
 	// 使用中のノード数を更新
 	if currentNode >= t.size {
@@ -115,8 +196,50 @@ func (t *DoubleArrayTrie) Add(path string, handler HandlerFunc) error {
 	return nil
 }
 
-// Search はパスに一致するハンドラを検索します。
-// パスを先頭から1文字ずつ辿り、対応するノードを探索します。
+// searchWithoutLock はロックなしでパスを検索します。
+// 内部使用のみを想定しています。
+func (t *DoubleArrayTrie) searchWithoutLock(path string) HandlerFunc {
+	if len(path) == 0 {
+		return nil
+	}
+
+	// ルートノードから開始
+	currentNode := rootNode
+
+	// パスを文字単位で処理
+	for i := 0; i < len(path); i++ {
+		c := path[i]
+
+		// 次のノードを計算
+		if t.base[currentNode] == 0 {
+			return nil // マッチするパスなし
+		}
+
+		nextNode := t.base[currentNode] + int32(c)
+
+		// 配列の範囲外チェック
+		if nextNode >= int32(len(t.check)) || nextNode < 0 {
+			return nil
+		}
+
+		// 遷移が有効かチェック
+		if t.check[nextNode] != currentNode {
+			return nil // マッチするパスなし
+		}
+
+		currentNode = nextNode
+	}
+
+	// 終端ノードにハンドラがあるかチェック
+	if int(currentNode) < len(t.handler) && t.handler[currentNode] != nil {
+		return t.handler[currentNode]
+	}
+
+	return nil
+}
+
+// Search はパスに一致するハンドラ関数を検索します。
+// 一致するパスが見つからない場合はnilを返します。
 func (t *DoubleArrayTrie) Search(path string) HandlerFunc {
 	if len(path) == 0 {
 		return nil
@@ -125,23 +248,7 @@ func (t *DoubleArrayTrie) Search(path string) HandlerFunc {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 
-	// ルートノードから開始
-	currentNode := rootNode
-
-	// パスの各文字に対してノードを辿る
-	for i := range path {
-		nextNode := t.base[currentNode] + int32(path[i])
-
-		// 範囲外または親子関係が不一致の場合は不一致
-		if nextNode < 0 || nextNode >= int32(len(t.check)) || t.check[nextNode] != currentNode {
-			return nil
-		}
-
-		currentNode = nextNode
-	}
-
-	// パスの終端に関連付けられたハンドラを返す
-	return t.handler[currentNode]
+	return t.searchWithoutLock(path)
 }
 
 // findBase は指定された文字セットに対して適切なbase値を探索します。
@@ -209,7 +316,9 @@ func (t *DoubleArrayTrie) expand(requiredSize int32) error {
 	// 既存データをコピー
 	copy(newBase, t.base)
 	copy(newCheck, t.check)
-	copy(newHandler, t.handler)
+	if t.handler != nil {
+		copy(newHandler, t.handler)
+	}
 
 	// 新しい配列を設定
 	t.base = newBase

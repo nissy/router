@@ -2,7 +2,9 @@ package router
 
 import (
 	"context"
+	"log"
 	"net/http"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -10,6 +12,42 @@ import (
 	"sync/atomic"
 	"time"
 )
+
+// responseWriter はhttp.ResponseWriterを拡張し、レスポンスの書き込み状態を追跡します。
+type responseWriter struct {
+	http.ResponseWriter
+	written bool
+	status  int
+}
+
+// WriteHeader はHTTPステータスコードを設定します。
+// 既にレスポンスが書き込まれている場合は何もしません。
+func (rw *responseWriter) WriteHeader(code int) {
+	if !rw.written {
+		rw.status = code
+		rw.ResponseWriter.WriteHeader(code)
+		rw.written = true
+	}
+}
+
+// Write はレスポンスボディを書き込みます。
+// 書き込みが行われると、writtenフラグが設定されます。
+func (rw *responseWriter) Write(b []byte) (int, error) {
+	if !rw.written {
+		rw.written = true
+	}
+	return rw.ResponseWriter.Write(b)
+}
+
+// Written はレスポンスが既に書き込まれているかどうかを返します。
+func (rw *responseWriter) Written() bool {
+	return rw.written
+}
+
+// Status は設定されたHTTPステータスコードを返します。
+func (rw *responseWriter) Status() int {
+	return rw.status
+}
 
 // HandlerFunc はHTTPリクエストを処理し、エラーを返す関数型です。
 // 標準のhttp.HandlerFuncとは異なり、エラーを返すことでエラーハンドリングを統一できます。
@@ -66,6 +104,7 @@ type Router struct {
 	// ハンドラ関連
 	errorHandler    func(http.ResponseWriter, *http.Request, error) // エラー発生時の処理関数
 	shutdownHandler http.HandlerFunc                                // シャットダウン中のリクエスト処理関数
+	timeoutHandler  http.HandlerFunc                                // タイムアウト時の処理関数
 
 	// ミドルウェア関連
 	middleware atomic.Value // ミドルウェア関数のリスト（スレッドセーフな更新のためatomic.Value使用）
@@ -76,10 +115,17 @@ type Router struct {
 	activeRequests sync.WaitGroup // アクティブなリクエストの数を追跡
 	wgMu           sync.Mutex     // activeRequestsへのアクセスを保護するミューテックス
 	shuttingDown   atomic.Bool    // シャットダウン中かどうかを示すフラグ
+
+	// タイムアウト設定
+	requestTimeout time.Duration // リクエスト処理のタイムアウト時間（0の場合はタイムアウトなし）
+	timeoutMu      sync.RWMutex  // タイムアウト設定へのアクセスを保護するミューテックス
+
+	// パラメータ関連
+	paramsPool *ParamsPool // URLパラメータオブジェクトのプール（各ルーターインスタンス固有）
 }
 
 // defaultErrorHandler はデフォルトのエラーハンドラで、
-// 内部サーバーエラー（500）を返します。
+// 500 Internal Server Errorを返します。
 func defaultErrorHandler(w http.ResponseWriter, r *http.Request, err error) {
 	http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 }
@@ -92,16 +138,27 @@ func defaultShutdownHandler(w http.ResponseWriter, r *http.Request) {
 	http.Error(w, "Server is shutting down", http.StatusServiceUnavailable)
 }
 
+// defaultTimeoutHandler はデフォルトのタイムアウトハンドラで、
+// 503 Service Unavailableを返します。
+func defaultTimeoutHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Connection", "close")
+	w.Header().Set("Retry-After", "60") // 60秒後に再試行を推奨
+	http.Error(w, "Request processing timed out", http.StatusServiceUnavailable)
+}
+
 // NewRouter は新しいRouterインスタンスを初期化して返します。
 // 静的ルート用のDoubleArrayTrieとキャッシュを初期化し、デフォルトのエラーハンドラを設定します。
 func NewRouter() *Router {
 	r := &Router{
 		staticTrie:      newDoubleArrayTrie(),
-		cache:           newCache(),
+		cache:           NewCache(defaultCacheMaxEntries),
 		errorHandler:    defaultErrorHandler,
 		shutdownHandler: defaultShutdownHandler,
+		timeoutHandler:  defaultTimeoutHandler,
+		paramsPool:      NewParamsPool(), // パラメータプールを初期化
 		routes:          make([]*Route, 0),
 		groups:          make([]*Group, 0),
+		requestTimeout:  30 * time.Second, // デフォルトのタイムアウト: 30秒
 	}
 	// ミドルウェアリストを初期化（atomic.Valueを使用するため）
 	r.middleware.Store(make([]MiddlewareFunc, 0, 8))
@@ -132,6 +189,13 @@ func (r *Router) SetShutdownHandler(h http.HandlerFunc) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.shutdownHandler = h
+}
+
+// SetTimeoutHandler はタイムアウト時の処理関数を設定します。
+func (r *Router) SetTimeoutHandler(h http.HandlerFunc) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.timeoutHandler = h
 }
 
 // Use は1つ以上のミドルウェア関数をルーターに追加します。
@@ -179,9 +243,77 @@ func (r *Router) AddCleanupMiddleware(cm CleanupMiddleware) {
 	r.cleanupMws.Store(newCleanup)
 }
 
-// ServeHTTP はHTTPリクエストを処理します。ルートマッチングを行い、ミドルウェアを
-// 適用してハンドラを実行します。エラーが発生した場合はエラーハンドラを呼び出します。
+// ServeHTTP はHTTPリクエストを処理します。
+// ルートマッチングを行い、適切なハンドラを呼び出します。
+// ミドルウェアチェーンを構築し、エラーハンドリングを行います。
 func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
+	// レスポンスラッパーを作成して、書き込み状態を追跡
+	rw := &responseWriter{ResponseWriter: w, status: http.StatusOK}
+
+	// ハンドラとルートを検索
+	handler, route, found := r.findHandlerAndRoute(req.Method, req.URL.Path)
+	if !found {
+		// 404処理
+		http.NotFound(rw, req)
+		return
+	}
+
+	// 処理時間の制限を設定
+	ctx := req.Context()
+	var cancel context.CancelFunc
+	var timeoutOccurred atomic.Bool // タイムアウトが発生したかどうかを追跡
+
+	// 既存のデッドラインがない場合、設定されたタイムアウトを適用
+	if _, ok := ctx.Deadline(); !ok {
+		// タイムアウト設定を取得（ルート固有の設定があればそれを使用）
+		var timeout time.Duration
+		if route != nil {
+			timeout = route.GetTimeout()
+		} else {
+			r.timeoutMu.RLock()
+			timeout = r.requestTimeout
+			r.timeoutMu.RUnlock()
+		}
+
+		// タイムアウトが設定されている場合のみ適用
+		if timeout > 0 {
+			ctx, cancel = context.WithTimeout(ctx, timeout)
+			defer cancel()
+			req = req.WithContext(ctx)
+
+			// コンテキストのキャンセルを監視
+			done := make(chan struct{})
+
+			// タイムアウト監視ゴルーチン
+			go func() {
+				select {
+				case <-ctx.Done():
+					if ctx.Err() == context.DeadlineExceeded {
+						// タイムアウトの場合、タイムアウトハンドラを呼び出す
+						timeoutOccurred.Store(true)
+
+						// レスポンスがまだ書き込まれていない場合のみ処理
+						if !rw.Written() {
+							r.mu.RLock()
+							timeoutHandler := r.timeoutHandler
+							r.mu.RUnlock()
+							if timeoutHandler != nil {
+								timeoutHandler(rw, req)
+							} else {
+								// デフォルトのタイムアウト処理
+								http.Error(rw, "Request timeout", http.StatusGatewayTimeout)
+							}
+						}
+					}
+				case <-done:
+					// 正常に処理が完了
+				}
+			}()
+
+			defer close(done) // ゴルーチンリークを防止
+		}
+	}
+
 	// シャットダウン中の場合はシャットダウンハンドラを呼び出す
 	// atomic.Boolを使用しているため、読み取りは同期化されている
 	// シャットダウンフラグをローカル変数にコピーして、データ競合を防ぐ
@@ -190,7 +322,7 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		r.mu.RLock()
 		shutdownHandler := r.shutdownHandler
 		r.mu.RUnlock()
-		shutdownHandler(w, req)
+		shutdownHandler(rw, req)
 		return
 	}
 
@@ -205,24 +337,55 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		r.activeRequests.Done() // ミューテックスなしでDoneを呼び出す
 	}()
 
-	// パスを正規化（先頭に/を追加、末尾の/を削除）
-	path := normalizePath(req.URL.Path)
-
-	// ルートマッチング
-	handler, found := r.findHandler(req.Method, path)
-	if !found {
-		http.NotFound(w, req)
-		return
+	// URLパラメータを取得
+	params, paramsFound := r.cache.GetParams(generateRouteKey(methodToUint8(req.Method), normalizePath(req.URL.Path)))
+	if paramsFound && len(params) > 0 {
+		// キャッシュからパラメータを取得できた場合
+		ps := r.paramsPool.Get()
+		for k, v := range params {
+			ps.Add(k, v)
+		}
+		ctx = contextWithParams(ctx, ps)
+		req = req.WithContext(ctx)
+		defer r.paramsPool.Put(ps)
 	}
 
 	// ミドルウェアチェーンを構築して実行
-	finalHandler := r.buildMiddlewareChain(handler)
-	if err := finalHandler(w, req); err != nil {
-		// エラーハンドラを呼び出し
-		r.mu.RLock()
-		errorHandler := r.errorHandler
-		r.mu.RUnlock()
-		errorHandler(w, req, err)
+	h := r.buildMiddlewareChain(handler)
+	err := h(rw, req)
+
+	// エラーが発生した場合はエラーハンドラを呼び出す
+	if err != nil {
+		// タイムアウトが既に発生している場合は処理しない
+		if timeoutOccurred.Load() {
+			return
+		}
+
+		// レスポンスがまだ書き込まれていない場合のみ処理
+		if !rw.Written() {
+			// エラーハンドラ内でのパニックを処理
+			defer func() {
+				if r := recover(); r != nil {
+					log.Printf("Error handler panic: %v", r)
+					if !rw.Written() {
+						http.Error(rw, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+					}
+				}
+			}()
+
+			// ルート固有のエラーハンドラがあれば使用
+			var errorHandler func(http.ResponseWriter, *http.Request, error)
+			if route != nil && route.errorHandler != nil {
+				errorHandler = route.errorHandler
+			} else {
+				r.mu.RLock()
+				errorHandler = r.errorHandler
+				r.mu.RUnlock()
+			}
+
+			// エラーハンドラを呼び出す
+			errorHandler(rw, req, err)
+		}
 	}
 }
 
@@ -234,12 +397,74 @@ func (r *Router) buildMiddlewareChain(final HandlerFunc) HandlerFunc {
 	return applyMiddlewareChain(final, middleware)
 }
 
+// findHandlerAndRoute はリクエストのパスとメソッドに一致するハンドラとルートを検索します。
+// キャッシュを使用して高速に検索し、キャッシュにない場合は静的ルートと動的ルートを順に検索します。
+func (r *Router) findHandlerAndRoute(method, path string) (HandlerFunc, *Route, bool) {
+	// パスの正規化
+	path = normalizePath(path)
+
+	// HTTPメソッドを数値に変換
+	methodIndex := methodToUint8(method)
+	if methodIndex == 0 {
+		return nil, nil, false
+	}
+
+	// キャッシュキーを生成
+	key := generateRouteKey(methodIndex, path)
+
+	// キャッシュを確認
+	if handler, found := r.cache.Get(key); found {
+		// キャッシュヒット
+		return handler, nil, true
+	}
+
+	// 静的ルートを検索
+	if handler := r.staticTrie.Search(path); handler != nil {
+		// 静的ルートが見つかった場合はキャッシュに追加
+		r.cache.Set(key, handler, nil)
+		return handler, nil, true
+	}
+
+	// 動的ルートを検索
+	nodeIndex := methodIndex - 1
+	node := r.dynamicNodes[nodeIndex]
+	if node != nil {
+		// パラメータオブジェクトをプールから取得
+		params := r.paramsPool.Get()
+		handler, matched := node.Match(path, params)
+		if matched && handler != nil {
+			// 動的ルートが見つかった場合はキャッシュに追加
+			// パラメータをマップに変換
+			paramsMap := make(map[string]string, params.Len())
+			for i := 0; i < params.Len(); i++ {
+				key, val := params.data[i].key, params.data[i].value
+				paramsMap[key] = val
+			}
+			r.cache.Set(key, handler, paramsMap)
+
+			// パラメータオブジェクトをプールに返却
+			r.paramsPool.Put(params)
+			return handler, nil, true
+		}
+		// パラメータオブジェクトをプールに返却
+		r.paramsPool.Put(params)
+	}
+
+	// ルートが見つからなかった場合
+	return nil, nil, false
+}
+
 // findHandler はHTTPメソッドとパスに一致するハンドラ関数を検索します。
 // 1. キャッシュをチェック
 // 2. 静的ルート（DoubleArrayTrie）をチェック
 // 3. 動的ルート（Radixツリー）をチェック
 // の順で検索し、最初に見つかったハンドラを返します。
 func (r *Router) findHandler(method, path string) (HandlerFunc, bool) {
+	// パスの検証
+	if path == "" || (len(path) > 1 && path[0] != '/') {
+		return nil, false // 無効なパス
+	}
+
 	// HTTPメソッドを数値に変換
 	methodIndex := methodToUint8(method)
 	if methodIndex == 0 {
@@ -488,31 +713,30 @@ func (r *Router) Shutdown(ctx context.Context) error {
 	// シャットダウンフラグを設定
 	r.shuttingDown.Store(true)
 
-	// キャッシュを停止
+	// キャッシュのクリーンアップループを停止
 	r.cache.Stop()
 
-	// ミドルウェアのクリーンアップ
+	// クリーンアップ可能なミドルウェアをクリーンアップ
 	cleanupMws := r.cleanupMws.Load().([]CleanupMiddleware)
 	for _, cm := range cleanupMws {
 		if err := cm.Cleanup(); err != nil {
-			// エラーは無視して続行
+			return err
 		}
 	}
 
 	// アクティブなリクエストの完了を待機
-	// ゴルーチンを使わずに直接待機することでデータ競合を防ぐ
 	waitCh := make(chan struct{})
 	go func() {
-		// WaitGroupのWaitはロックなしで呼び出す
 		r.activeRequests.Wait()
 		close(waitCh)
 	}()
 
+	// コンテキストのキャンセルまたはすべてのリクエストの完了を待機
 	select {
-	case <-waitCh:
-		return nil
 	case <-ctx.Done():
 		return ctx.Err()
+	case <-waitCh:
+		return nil
 	}
 }
 
@@ -532,21 +756,25 @@ func (r *Router) MustHandle(method, pattern string, h HandlerFunc) {
 	}
 }
 
-// Route は新しいルートを作成しますが、まだ登録はしません。
-// 返されたRouteオブジェクトに対してWithMiddlewareを呼び出すことで、
-// 特定のミドルウェアを適用できます。
+// Route は新しいルートを登録します。パターンが静的な場合はDoubleArrayTrieに、
+// 動的パラメータを含む場合はRadixツリーに登録します。
+// パターン、HTTPメソッド、ハンドラ関数の検証も行います。
+// 静的ルートと動的ルートが競合する場合は静的ルートが優先されます。
+// その他の重複パターン（同一パスの重複登録など）はエラーとなります。
 func (r *Router) Route(method, pattern string, h HandlerFunc, middleware ...MiddlewareFunc) *Route {
 	// パスの正規化
 	pattern = normalizePath(pattern)
 
 	route := &Route{
-		group:      nil, // ルーターに直接登録されたルートはグループに属さない
-		router:     r,   // ルーターへの参照を設定
-		method:     method,
-		subPath:    pattern,
-		handler:    h,
-		middleware: make([]MiddlewareFunc, 0, len(middleware)),
-		applied:    false,
+		group:        nil, // ルーターに直接登録されたルートはグループに属さない
+		router:       r,   // ルーターへの参照を設定
+		method:       method,
+		subPath:      pattern,
+		handler:      h,
+		middleware:   make([]MiddlewareFunc, 0, len(middleware)),
+		applied:      false,
+		timeout:      0,
+		errorHandler: nil, // nilに設定（ルーターのデフォルト値を使用）
 	}
 
 	// ミドルウェアを追加
@@ -601,36 +829,30 @@ func (r *Router) Options(pattern string, h HandlerFunc, middleware ...Middleware
 // このメソッドは明示的に呼び出す必要があります。
 // 重複するルートが検出された場合はエラーを返します。
 func (r *Router) Build() error {
-	routeCount := len(r.routes)
-	for _, group := range r.groups {
-		routeCount += len(group.routes)
+	// グローバルな重複チェック用のマップ
+	globalRouteMap := make(map[string]string)
+
+	// 直接登録されたルートを一時的に保存
+	directRoutes := make([]*Route, len(r.routes))
+	copy(directRoutes, r.routes)
+
+	// グループのルートを収集
+	var allGroupRoutes []*Route
+	for i, group := range r.groups {
+		groupID := "group" + strconv.Itoa(i)
+		groupRoutes, err := r.collectGroupRoutes(group, globalRouteMap, groupID)
+		if err != nil {
+			return err
+		}
+		allGroupRoutes = append(allGroupRoutes, groupRoutes...)
 	}
 
-	// グローバルな重複チェック用のマップ（初期容量を設定）
-	globalRouteMap := make(map[string]string, routeCount)
-
-	// 直接登録されたルートの重複チェック（初期容量を設定）
-	routeMap := make(map[string]struct{}, len(r.routes))
-
-	// 直接登録されたルートを登録
-	for _, route := range r.routes {
-		if route.applied {
-			continue
-		}
-
-		// ルートキーを事前に生成（文字列連結を1回だけ実行）
+	// すべてのルートを事前チェック（重複や無効なパターンをチェック）
+	for _, route := range directRoutes {
+		// ルート情報を事前に生成
 		routeKey := route.method + ":" + route.subPath
 
-		// ローカルな重複チェック
-		if _, exists := routeMap[routeKey]; exists {
-			return &RouterError{
-				Code:    ErrInvalidPattern,
-				Message: "duplicate route definition: " + route.method + " " + route.subPath,
-			}
-		}
-		routeMap[routeKey] = struct{}{}
-
-		// グローバルな重複チェック
+		// 重複チェック
 		if existingRoute, exists := globalRouteMap[routeKey]; exists {
 			return &RouterError{
 				Code:    ErrInvalidPattern,
@@ -638,7 +860,7 @@ func (r *Router) Build() error {
 			}
 		}
 
-		// ルート情報を事前に生成（文字列連結を1回だけ実行）
+		// ルート情報をマップに追加
 		routeInfo := "router:" + route.method + " " + route.subPath
 		globalRouteMap[routeKey] = routeInfo
 
@@ -650,29 +872,84 @@ func (r *Router) Build() error {
 			handler = route.handler
 		}
 
-		// ルートを登録
-		if err := r.Handle(route.method, route.subPath, handler); err != nil {
+		// ルートを検証（実際には登録しない）
+		if err := r.validateRoute(route.method, route.subPath, handler); err != nil {
 			return err
 		}
-
-		route.applied = true
 	}
 
-	// すべてのグループのルートを登録
-	for i, group := range r.groups {
-		// グループ内のルートを収集して重複チェック
-		groupID := "group" + strconv.Itoa(i)
-		groupRoutes, err := r.collectGroupRoutes(group, globalRouteMap, groupID)
-		if err != nil {
-			return err
+	// グループのルートも事前チェック
+	for _, route := range allGroupRoutes {
+		// 完全なパスを計算
+		var fullPath string
+		if route.group != nil {
+			fullPath = joinPath(route.group.prefix, normalizePath(route.subPath))
+		} else {
+			fullPath = route.subPath
 		}
 
-		// グループのルートを登録
-		for _, route := range groupRoutes {
-			if err := route.build(); err != nil {
-				return err
+		// ルート情報を事前に生成
+		routeKey := route.method + ":" + fullPath
+
+		// 重複チェック
+		if existingRoute, exists := globalRouteMap[routeKey]; exists {
+			return &RouterError{
+				Code:    ErrInvalidPattern,
+				Message: "duplicate route definition: " + route.method + " " + fullPath + " (conflicts with " + existingRoute + ")",
 			}
 		}
+
+		// ルート情報をマップに追加
+		routeInfo := "group:" + route.method + " " + fullPath
+		globalRouteMap[routeKey] = routeInfo
+
+		// ミドルウェアをハンドラに適用
+		var handler HandlerFunc
+		if len(route.middleware) > 0 {
+			handler = applyMiddlewareChain(route.handler, route.middleware)
+		} else {
+			handler = route.handler
+		}
+
+		// ルートを検証（実際には登録しない）
+		if err := r.validateRoute(route.method, fullPath, handler); err != nil {
+			return err
+		}
+	}
+
+	// すべてのチェックが通ったら、実際に登録
+	for _, route := range directRoutes {
+		if err := route.build(); err != nil {
+			return err
+		}
+	}
+
+	for _, route := range allGroupRoutes {
+		if err := route.build(); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// validateRoute はルートを検証しますが、実際には登録しません。
+// Handle メソッドの検証部分のみを抽出したものです。
+func (r *Router) validateRoute(method, pattern string, h HandlerFunc) error {
+	// パスの検証
+	if pattern == "" || (len(pattern) > 1 && pattern[0] != '/') {
+		return &RouterError{Code: ErrInvalidPattern, Message: "invalid path: " + pattern}
+	}
+
+	// HTTPメソッドを数値に変換
+	methodIndex := methodToUint8(method)
+	if methodIndex == 0 {
+		return &RouterError{Code: ErrInvalidMethod, Message: "unsupported HTTP method: " + method}
+	}
+
+	// ハンドラ関数の検証
+	if h == nil {
+		return &RouterError{Code: ErrNilHandler, Message: "handler function is nil"}
 	}
 
 	return nil
@@ -705,4 +982,182 @@ func (r *Router) collectGroupRoutes(group *Group, globalRouteMap map[string]stri
 	}
 
 	return routes, nil
+}
+
+// SetRequestTimeout はリクエスト処理のタイムアウト時間を設定します。
+// 0以下の値を指定するとタイムアウトは無効になります。
+func (r *Router) SetRequestTimeout(timeout time.Duration) {
+	r.timeoutMu.Lock()
+	defer r.timeoutMu.Unlock()
+	r.requestTimeout = timeout
+}
+
+// GetRequestTimeout は現在設定されているリクエスト処理のタイムアウト時間を返します。
+func (r *Router) GetRequestTimeout() time.Duration {
+	r.timeoutMu.RLock()
+	defer r.timeoutMu.RUnlock()
+	return r.requestTimeout
+}
+
+// TimeoutSettings はルーター、グループ、ルートのタイムアウト設定を文字列として返します。
+// 設定の継承関係や上書き状況を視覚的に表示します。
+func (r *Router) TimeoutSettings() string {
+	var result strings.Builder
+
+	// ルーターレベルの設定
+	result.WriteString("Router Default Timeout: " + r.GetRequestTimeout().String() + "\n")
+
+	// 直接登録されたルートの設定
+	if len(r.routes) > 0 {
+		result.WriteString("Direct Routes:\n")
+		for _, route := range r.routes {
+			timeoutSource := "inherited"
+			if route.timeout > 0 {
+				timeoutSource = "override"
+			}
+			routeInfo := "  " + route.method + " " + route.subPath + ": Timeout=" +
+				route.GetTimeout().String() + " (" + timeoutSource + ")\n"
+			result.WriteString(routeInfo)
+		}
+	}
+
+	// グループとそのルートの設定
+	if len(r.groups) > 0 {
+		result.WriteString("Groups:\n")
+		for _, group := range r.groups {
+			groupInfo := buildGroupTimeoutSettings(group, 1)
+			result.WriteString(groupInfo)
+		}
+	}
+
+	return result.String()
+}
+
+// buildGroupTimeoutSettings はグループとそのルートのタイムアウト設定を文字列として返します。
+func buildGroupTimeoutSettings(group *Group, indent int) string {
+	var result strings.Builder
+	indentStr := strings.Repeat("  ", indent)
+
+	// グループの設定
+	timeoutSource := "inherited"
+	if group.timeout > 0 {
+		timeoutSource = "override"
+	}
+
+	groupInfo := indentStr + "Group '" + group.prefix + "': Timeout=" +
+		group.GetTimeout().String() + " (" + timeoutSource + ")\n"
+	result.WriteString(groupInfo)
+
+	// ルートの設定
+	for _, route := range group.routes {
+		routeInfo := buildRouteTimeoutSettings(route, indent+1)
+		result.WriteString(routeInfo)
+	}
+
+	return result.String()
+}
+
+// buildRouteTimeoutSettings はルートのタイムアウト設定を文字列として返します。
+func buildRouteTimeoutSettings(route *Route, indent int) string {
+	indentStr := strings.Repeat("  ", indent)
+
+	// ルートの設定
+	timeoutSource := "inherited"
+	if route.timeout > 0 {
+		timeoutSource = "override"
+	}
+
+	return indentStr + "Route '" + route.method + " " + route.subPath + "': Timeout=" +
+		route.GetTimeout().String() + " (" + timeoutSource + ")\n"
+}
+
+// GetErrorHandler はルーターのデフォルトエラーハンドラを返します。
+// エラーハンドラが設定されていない場合は、デフォルトのエラーハンドラを返します。
+func (r *Router) GetErrorHandler() func(http.ResponseWriter, *http.Request, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if r.errorHandler != nil {
+		return r.errorHandler
+	}
+	return defaultErrorHandler
+}
+
+// ErrorHandlerSettings はルーター、グループ、ルートのエラーハンドラ設定を文字列として返します。
+// 設定の継承関係や上書き状況を視覚的に表示します。
+func (r *Router) ErrorHandlerSettings() string {
+	var result strings.Builder
+
+	// ルーターレベルの設定
+	result.WriteString("Router Default Error Handler: " + handlerToString(r.GetErrorHandler()) + "\n")
+
+	// 直接登録されたルートの設定
+	if len(r.routes) > 0 {
+		result.WriteString("Direct Routes:\n")
+		for _, route := range r.routes {
+			handlerSource := "inherited"
+			if route.errorHandler != nil {
+				handlerSource = "override"
+			}
+			routeInfo := "  " + route.method + " " + route.subPath + ": Error Handler=" +
+				handlerToString(route.GetErrorHandler()) + " (" + handlerSource + ")\n"
+			result.WriteString(routeInfo)
+		}
+	}
+
+	// グループとそのルートの設定
+	if len(r.groups) > 0 {
+		result.WriteString("Groups:\n")
+		for _, group := range r.groups {
+			groupInfo := buildGroupErrorHandlerSettings(group, 1)
+			result.WriteString(groupInfo)
+		}
+	}
+
+	return result.String()
+}
+
+// handlerToString はハンドラ関数を文字列表現に変換します
+func handlerToString(handler interface{}) string {
+	if handler == nil {
+		return "nil"
+	}
+	return reflect.TypeOf(handler).String()
+}
+
+// buildGroupErrorHandlerSettings はグループとそのルートのエラーハンドラ設定を文字列として返します。
+func buildGroupErrorHandlerSettings(group *Group, indent int) string {
+	var result strings.Builder
+	indentStr := strings.Repeat("  ", indent)
+
+	// グループの設定
+	handlerSource := "inherited"
+	if group.errorHandler != nil {
+		handlerSource = "override"
+	}
+
+	groupInfo := indentStr + "Group '" + group.prefix + "': Error Handler=" +
+		handlerToString(group.GetErrorHandler()) + " (" + handlerSource + ")\n"
+	result.WriteString(groupInfo)
+
+	// ルートの設定
+	for _, route := range group.routes {
+		routeInfo := buildRouteErrorHandlerSettings(route, indent+1)
+		result.WriteString(routeInfo)
+	}
+
+	return result.String()
+}
+
+// buildRouteErrorHandlerSettings はルートのエラーハンドラ設定を文字列として返します。
+func buildRouteErrorHandlerSettings(route *Route, indent int) string {
+	indentStr := strings.Repeat("  ", indent)
+
+	// ルートの設定
+	handlerSource := "inherited"
+	if route.errorHandler != nil {
+		handlerSource = "override"
+	}
+
+	return indentStr + "Route '" + route.method + " " + route.subPath + "': Error Handler=" +
+		handlerToString(route.GetErrorHandler()) + " (" + handlerSource + ")\n"
 }
