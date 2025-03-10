@@ -27,8 +27,8 @@ type ParamsPool struct {
 	pool sync.Pool
 }
 
-// NewParamsPool creates a new ParamsPool.
-func NewParamsPool() *ParamsPool {
+// newParamsPool creates a new ParamsPool.
+func newParamsPool() *ParamsPool {
 	return &ParamsPool{
 		pool: sync.Pool{
 			New: func() any {

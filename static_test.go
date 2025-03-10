@@ -7,9 +7,9 @@ import (
 	"time"
 )
 
-// TestDoubleArrayTrieCreation tests the creation of a DoubleArrayTrie
+// TestDoubleArrayTrieCreation tests the creation of a doubleArrayTrie
 func TestDoubleArrayTrieCreation(t *testing.T) {
-	// Create a new DoubleArrayTrie
+	// Create a new doubleArrayTrie
 	trie := newDoubleArrayTrie()
 
 	// Check initial state
@@ -36,7 +36,7 @@ func TestDoubleArrayTrieCreation(t *testing.T) {
 
 // TestStaticRouteAdditionAndSearch tests adding and searching static routes
 func TestStaticRouteAdditionAndSearch(t *testing.T) {
-	// Create a new DoubleArrayTrie
+	// Create a new doubleArrayTrie
 	trie := newDoubleArrayTrie()
 
 	// Test handler functions
@@ -57,19 +57,19 @@ func TestStaticRouteAdditionAndSearch(t *testing.T) {
 		t.Fatalf("Failed to add users path: %v", err)
 	}
 
-	// Search routes
-	h1 := trie.Search("/")
+	// search routes
+	h1 := trie.search("/")
 	if h1 == nil {
 		t.Fatalf("Root path not found")
 	}
 
-	h2 := trie.Search("/users")
+	h2 := trie.search("/users")
 	if h2 == nil {
 		t.Fatalf("Users path not found")
 	}
 
-	// Search non-existent path
-	h3 := trie.Search("/notfound")
+	// search non-existent path
+	h3 := trie.search("/notfound")
 	if h3 != nil {
 		t.Fatalf("Non-existent path was found")
 	}
@@ -77,7 +77,7 @@ func TestStaticRouteAdditionAndSearch(t *testing.T) {
 
 // TestDuplicateRouteAddition tests adding duplicate routes
 func TestDuplicateRouteAddition(t *testing.T) {
-	// Create a new DoubleArrayTrie
+	// Create a new doubleArrayTrie
 	trie := newDoubleArrayTrie()
 
 	// Test handler function
@@ -109,7 +109,7 @@ func TestDuplicateRouteAddition(t *testing.T) {
 
 // TestLongPathAddition tests adding a long path
 func TestLongPathAddition(t *testing.T) {
-	// Create a new DoubleArrayTrie
+	// Create a new doubleArrayTrie
 	trie := newDoubleArrayTrie()
 
 	// Test handler function
@@ -123,8 +123,8 @@ func TestLongPathAddition(t *testing.T) {
 		t.Fatalf("Failed to add long path: %v", err)
 	}
 
-	// Search path
-	h := trie.Search(longPath)
+	// search path
+	h := trie.search(longPath)
 	if h == nil {
 		t.Fatalf("Long path not found")
 	}
@@ -132,7 +132,7 @@ func TestLongPathAddition(t *testing.T) {
 
 // TestTrieExpansion tests array expansion of the trie
 func TestTrieExpansion(t *testing.T) {
-	// Create a new DoubleArrayTrie
+	// Create a new doubleArrayTrie
 	trie := newDoubleArrayTrie()
 
 	// Test handler function
@@ -154,9 +154,9 @@ func TestTrieExpansion(t *testing.T) {
 		}
 	}
 
-	// Search added paths
+	// search added paths
 	for _, path := range paths {
-		h := trie.Search(path)
+		h := trie.search(path)
 		if h == nil {
 			t.Errorf("Path %s not found", path)
 		}
@@ -165,7 +165,7 @@ func TestTrieExpansion(t *testing.T) {
 
 // TestEmptyPathAddition tests adding an empty path
 func TestEmptyPathAddition(t *testing.T) {
-	// Create a new DoubleArrayTrie
+	// Create a new doubleArrayTrie
 	trie := newDoubleArrayTrie()
 
 	// Test handler function
@@ -192,7 +192,7 @@ func TestEmptyPathAddition(t *testing.T) {
 
 // TestNilHandlerAddition tests adding a nil handler
 func TestNilHandlerAddition(t *testing.T) {
-	// Create a new DoubleArrayTrie
+	// Create a new doubleArrayTrie
 	trie := newDoubleArrayTrie()
 
 	// Add nil handler

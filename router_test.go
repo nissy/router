@@ -16,8 +16,6 @@ import (
 	"time"
 )
 
-// Helper functions for testing
-
 // getTestPathPrefix generates a unique path prefix for each test
 func getTestPathPrefix() string {
 	// Use a time-based unique identifier
@@ -194,7 +192,7 @@ func TestShutdown(t *testing.T) {
 	isShutdown := false
 	shutdownMu := sync.Mutex{}
 
-	// Set shutdown handler
+	// set shutdown handler
 	r.SetShutdownHandler(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusServiceUnavailable)
 		_, _ = w.Write([]byte("Shutting down")) // Ignore errors (shutdown handler cannot return errors)
@@ -248,7 +246,7 @@ func TestShutdown(t *testing.T) {
 	shutdownMu.Unlock()
 }
 
-// TestShutdownWithTimeoutContext tests the ShutdownWithTimeoutContext method
+// TestShutdownWithTimeoutContext tests the shutdownWithTimeoutContext method
 func TestShutdownWithTimeoutContext(t *testing.T) {
 	r := NewRouter()
 	prefix := getTestPathPrefix()
@@ -257,7 +255,7 @@ func TestShutdownWithTimeoutContext(t *testing.T) {
 	isShutdown := false
 	shutdownMu := sync.Mutex{}
 
-	// Set shutdown handler
+	// set shutdown handler
 	r.SetShutdownHandler(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusServiceUnavailable)
 		_, _ = w.Write([]byte("Shutting down")) // Ignore errors (shutdown handler cannot return errors)
@@ -279,7 +277,7 @@ func TestShutdownWithTimeoutContext(t *testing.T) {
 
 	// Start shutdown with timeout
 	go func() {
-		if err := r.ShutdownWithTimeoutContext(100 * time.Millisecond); err != nil {
+		if err := r.shutdownWithTimeoutContext(100 * time.Millisecond); err != nil {
 			t.Errorf("Error occurred during shutdown: %v", err)
 		}
 	}()
@@ -352,7 +350,7 @@ func TestParamsExtraction(t *testing.T) {
 // TestDynamicRouting tests dynamic routing
 func TestDynamicRouting(t *testing.T) {
 	// Create a new node
-	node := NewNode("")
+	node := newNode("")
 
 	// Test handler function
 	handler := func(w http.ResponseWriter, r *http.Request) error {
@@ -361,15 +359,15 @@ func TestDynamicRouting(t *testing.T) {
 
 	// Add route
 	segments := []string{"users", "{id}"}
-	if err := node.AddRoute(segments, handler); err != nil {
+	if err := node.addRoute(segments, handler); err != nil {
 		t.Fatalf("Failed to add route: %v", err)
 	}
 
 	// Create parameter object
 	params := NewParams()
 
-	// Match route
-	h, matched := node.Match("/users/123", params)
+	// match route
+	h, matched := node.match("/users/123", params)
 
 	// Check matching
 	if !matched || h == nil {
@@ -534,7 +532,7 @@ func TestErrorHandling(t *testing.T) {
 	r := newTestRouter()
 	prefix := getTestPathPrefix()
 
-	// Set error handler
+	// set error handler
 	r.SetErrorHandler(func(w http.ResponseWriter, r *http.Request, err error) {
 		w.WriteHeader(http.StatusInternalServerError)
 		_, _ = w.Write([]byte(fmt.Sprintf("Error occurred: %v", err))) // Ignore error (error handler cannot return error)
@@ -605,14 +603,14 @@ func TestRouteTimeout(t *testing.T) {
 		// Create a new router
 		r := NewRouter()
 
-		// Set global timeout (longer to avoid flakiness)
+		// set global timeout (longer to avoid flakiness)
 		globalTimeout := 500 * time.Millisecond
 		r.SetRequestTimeout(globalTimeout)
 
 		// タイムアウトハンドラーの呼び出しを検出するための同期機構
 		timeoutHandlerCh := make(chan struct{})
 
-		// Set timeout handler
+		// set timeout handler
 		r.SetTimeoutHandler(func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusRequestTimeout)
 			w.Write([]byte("Request timed out"))
@@ -663,14 +661,14 @@ func TestRouteTimeout(t *testing.T) {
 		// Create a new router
 		r := NewRouter()
 
-		// Set global timeout (longer than route timeout)
+		// set global timeout (longer than route timeout)
 		globalTimeout := 1000 * time.Millisecond
 		r.SetRequestTimeout(globalTimeout)
 
 		// タイムアウトハンドラーの呼び出しを検出するための同期機構
 		timeoutHandlerCh := make(chan struct{})
 
-		// Set timeout handler
+		// set timeout handler
 		r.SetTimeoutHandler(func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusRequestTimeout)
 			w.Write([]byte("Request timed out"))
@@ -727,7 +725,7 @@ func TestGroupRoutes(t *testing.T) {
 		groupPrefix := fmt.Sprintf("%s/group-%d", prefix, i)
 
 		// Create router with overrideable settings
-		opts := DefaultRouterOptions()
+		opts := defaultRouterOptions()
 		opts.AllowRouteOverride = true
 		r := NewRouterWithOptions(opts)
 
@@ -746,7 +744,7 @@ func TestGroupRoutes(t *testing.T) {
 			// Capture loop variable for final response
 			finalResponse := response // Loop variable is captured
 
-			// Register route using Group.Get method
+			// Register route using Group.get method
 			group.Get(path, func(w http.ResponseWriter, r *http.Request) error {
 				fmt.Fprint(w, finalResponse)
 				return nil
@@ -851,7 +849,7 @@ func TestRouteOverride(t *testing.T) {
 
 	t.Run("WithOverride", func(t *testing.T) {
 		// Create router with override option
-		opts := DefaultRouterOptions()
+		opts := defaultRouterOptions()
 		opts.AllowRouteOverride = true
 		r := NewRouterWithOptions(opts)
 		prefix := getTestPathPrefix()
@@ -891,7 +889,7 @@ func TestRouteOverride(t *testing.T) {
 
 	t.Run("GroupRouteOverride", func(t *testing.T) {
 		// Create router with override option
-		opts := DefaultRouterOptions()
+		opts := defaultRouterOptions()
 		opts.AllowRouteOverride = true
 		r := NewRouterWithOptions(opts)
 		prefix := getTestPathPrefix()
@@ -938,7 +936,7 @@ func newTestRouter() *Router {
 	// Create new router
 	r := NewRouter()
 
-	// Set a defer function to shut down the router when the test ends
+	// set a defer function to shut down the router when the test ends
 	runtime.SetFinalizer(r, func(r *Router) {
 		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 		defer cancel()
@@ -1123,7 +1121,7 @@ func TestMassiveRouteRegistration(t *testing.T) {
 	})
 
 	// キャッシュヒット率の情報を出力
-	t.Logf("Cache performance: %d hits, %d misses", cacheHits, cacheMisses)
+	t.Logf("cache performance: %d hits, %d misses", cacheHits, cacheMisses)
 
 	// ルーターの状態情報を出力
 	t.Logf("Router stats: %d dynamic routes, %d total routes registered",
@@ -1285,7 +1283,7 @@ func TestCleanupMiddleware(t *testing.T) {
 	}
 
 	// クリーンアップミドルウェアを登録
-	cm := NewCleanupMiddleware(mw, cleanup)
+	cm := newCleanupMiddleware(mw, cleanup)
 	r.AddCleanupMiddleware(cm)
 
 	// ミドルウェアが正しく取得できることを確認
@@ -1354,7 +1352,7 @@ func TestTimeoutSettings(t *testing.T) {
 // countDynamicRoutes counts the number of dynamic routes in the router
 func (r *Router) countDynamicRoutes() int {
 	count := 0
-	for _, node := range r.dynamicNodes {
+	for _, node := range r.dynamic {
 		if node != nil {
 			count += countNodeChildren(node)
 		}
@@ -1363,7 +1361,7 @@ func (r *Router) countDynamicRoutes() int {
 }
 
 // countNodeChildren recursively counts the number of handlers in a node tree
-func countNodeChildren(node *Node) int {
+func countNodeChildren(node *node) int {
 	if node == nil {
 		return 0
 	}
@@ -1391,8 +1389,8 @@ func TestResponseWriterStatus(t *testing.T) {
 		t.Errorf("Expected status %d, got %d", http.StatusOK, rw.Status())
 	}
 
-	// Set a new status
-	rw.WriteHeader(http.StatusNotFound)
+	// set a new status
+	rw.writeHeader(http.StatusNotFound)
 
 	// Check updated status
 	if rw.Status() != http.StatusNotFound {
@@ -1479,7 +1477,7 @@ func TestGroupTimeoutAndErrorHandler(t *testing.T) {
 	errorHandlerCalled = false
 
 	// ルート上書きを許可するオプションを設定
-	opts := DefaultRouterOptions()
+	opts := defaultRouterOptions()
 	opts.AllowRouteOverride = true
 	r := NewRouterWithOptions(opts)
 
@@ -1789,7 +1787,7 @@ func TestDuplicateRouteRegistration(t *testing.T) {
 
 	t.Run("With AllowRouteOverride option", func(t *testing.T) {
 		// オーバーライドを許可するオプションでルーターを作成
-		opts := DefaultRouterOptions()
+		opts := defaultRouterOptions()
 		opts.AllowRouteOverride = true
 		r := NewRouterWithOptions(opts)
 

@@ -5,10 +5,10 @@ import (
 	"sync"
 )
 
-// DoubleArrayTrie is a data structure that enables fast string matching.
+// doubleArrayTrie is a data structure that enables fast string matching.
 // Each node is represented by an array, using base and check values to manage transitions.
 // It specializes in searching static route patterns, balancing memory efficiency and search speed.
-type DoubleArrayTrie struct {
+type doubleArrayTrie struct {
 	base    []int32       // Base value for each node. Used for transitions to child nodes
 	check   []int32       // Used to verify parent-child relationships. 0 indicates unused
 	handler []HandlerFunc // Handler functions associated with each node
@@ -24,24 +24,24 @@ const (
 	rootNode        = int32(0)   // Index of the root node
 )
 
-// newDoubleArrayTrie initializes and returns a new DoubleArrayTrie instance.
+// newDoubleArrayTrie initializes and returns a new doubleArrayTrie instance.
 // It allocates arrays with the initial size and sets the base value for the root node.
-func newDoubleArrayTrie() *DoubleArrayTrie {
-	t := &DoubleArrayTrie{
+func newDoubleArrayTrie() *doubleArrayTrie {
+	t := &doubleArrayTrie{
 		base:    make([]int32, initialTrieSize),
 		check:   make([]int32, initialTrieSize),
 		handler: make([]HandlerFunc, initialTrieSize),
 		size:    1, // Root node exists, so start from 1
 	}
 
-	// Set the base value for the root node
+	// set the base value for the root node
 	t.base[rootNode] = baseOffset
 	return t
 }
 
 // Add adds a path and handler function to the trie.
 // Returns an error if the same path is already registered.
-func (t *DoubleArrayTrie) Add(path string, h HandlerFunc) error {
+func (t *doubleArrayTrie) Add(path string, h HandlerFunc) error {
 	if len(path) == 0 {
 		return &RouterError{
 			Code:    ErrInvalidPattern,
@@ -100,7 +100,7 @@ func (t *DoubleArrayTrie) Add(path string, h HandlerFunc) error {
 				}
 			}
 
-			// Set the new transition
+			// set the new transition
 			t.base[currentNode] = nextNode - int32(c)
 			t.check[nextNode] = currentNode
 			currentNode = nextNode
@@ -179,7 +179,7 @@ func (t *DoubleArrayTrie) Add(path string, h HandlerFunc) error {
 		}
 	}
 
-	// Set the handler at the terminal node
+	// set the handler at the terminal node
 	if int(currentNode) >= len(t.handler) {
 		// Expand the handler array as well
 		newHandlers := make([]HandlerFunc, len(t.base))
@@ -198,7 +198,7 @@ func (t *DoubleArrayTrie) Add(path string, h HandlerFunc) error {
 
 // searchWithoutLock searches for a path without locking.
 // Intended for internal use only.
-func (t *DoubleArrayTrie) searchWithoutLock(path string) HandlerFunc {
+func (t *doubleArrayTrie) searchWithoutLock(path string) HandlerFunc {
 	if len(path) == 0 {
 		return nil
 	}
@@ -233,9 +233,9 @@ func (t *DoubleArrayTrie) searchWithoutLock(path string) HandlerFunc {
 	return nil
 }
 
-// Search searches for a handler function that matches the path.
+// search searches for a handler function that matches the path.
 // Returns nil if no matching path is found.
-func (t *DoubleArrayTrie) Search(path string) HandlerFunc {
+func (t *doubleArrayTrie) search(path string) HandlerFunc {
 	if len(path) == 0 {
 		return nil
 	}
@@ -248,8 +248,8 @@ func (t *DoubleArrayTrie) Search(path string) HandlerFunc {
 
 // findBase searches for an appropriate base value for the specified character set.
 // It searches until it finds a position with no conflicts for all characters in the character set.
-func (t *DoubleArrayTrie) findBase(suffix []byte) int32 {
-	// Get the maximum character code in the suffix
+func (t *doubleArrayTrie) findBase(suffix []byte) int32 {
+	// get the maximum character code in the suffix
 	var maxCharCode int32 = 0
 	for _, char := range suffix {
 		if int32(char) > maxCharCode {
@@ -260,7 +260,7 @@ func (t *DoubleArrayTrie) findBase(suffix []byte) int32 {
 	// Start with a base value candidate of 1
 	baseCandidate := int32(1)
 
-	// Search until a base value with no conflicts is found
+	// search until a base value with no conflicts is found
 	for {
 		// Calculate the required array size
 		requiredSize := baseCandidate + maxCharCode + 1
@@ -294,7 +294,7 @@ func (t *DoubleArrayTrie) findBase(suffix []byte) int32 {
 
 // expand expands the array size of the trie.
 // The new size is calculated as a multiple of the current size.
-func (t *DoubleArrayTrie) expand(requiredSize int32) error {
+func (t *doubleArrayTrie) expand(requiredSize int32) error {
 	// Calculate the new size (either a multiple of the current size or the required size, whichever is larger)
 	newSize := int32(math.Max(float64(len(t.base))*growthFactor, float64(requiredSize)))
 
@@ -315,7 +315,7 @@ func (t *DoubleArrayTrie) expand(requiredSize int32) error {
 		copy(newHandler, t.handler)
 	}
 
-	// Set new array
+	// set new array
 	t.base = newBase
 	t.check = newCheck
 	t.handler = newHandler

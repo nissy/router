@@ -7,9 +7,9 @@ import (
 
 // TestNodeCreation はノードの作成をテストします
 func TestNodeCreation(t *testing.T) {
-	node := NewNode("/users")
+	node := newNode("/users")
 	if node == nil {
-		t.Fatal("NewNode returned nil")
+		t.Fatal("newNode returned nil")
 	}
 	if node.segment != "/users" {
 		t.Errorf("Expected pattern to be '/users', got '%s'", node.segment)
@@ -27,10 +27,10 @@ func TestNodeCreation(t *testing.T) {
 
 // TestStaticRouteAddition は静的ルートの追加をテストします
 func TestStaticRouteAddition(t *testing.T) {
-	root := NewNode("")
+	root := newNode("")
 	handler := func(w http.ResponseWriter, r *http.Request) error { return nil }
 
-	err := root.AddRoute([]string{"users"}, handler)
+	err := root.addRoute([]string{"users"}, handler)
 	if err != nil {
 		t.Fatalf("Failed to add route: %v", err)
 	}
@@ -53,10 +53,10 @@ func TestStaticRouteAddition(t *testing.T) {
 
 // TestParameterRouteAddition はパラメータルートの追加をテストします
 func TestParameterRouteAddition(t *testing.T) {
-	root := NewNode("")
+	root := newNode("")
 	handler := func(w http.ResponseWriter, r *http.Request) error { return nil }
 
-	err := root.AddRoute([]string{"users", "{id}"}, handler)
+	err := root.addRoute([]string{"users", "{id}"}, handler)
 	if err != nil {
 		t.Fatalf("Failed to add route: %v", err)
 	}
@@ -88,10 +88,10 @@ func TestParameterRouteAddition(t *testing.T) {
 
 // TestRegexRouteAddition は正規表現ルートの追加をテストします
 func TestRegexRouteAddition(t *testing.T) {
-	root := NewNode("")
+	root := newNode("")
 	handler := func(w http.ResponseWriter, r *http.Request) error { return nil }
 
-	err := root.AddRoute([]string{"users", "{id:[0-9]+}"}, handler)
+	err := root.addRoute([]string{"users", "{id:[0-9]+}"}, handler)
 	if err != nil {
 		t.Fatalf("Failed to add route: %v", err)
 	}
@@ -126,7 +126,7 @@ func TestRegexRouteAddition(t *testing.T) {
 
 // TestMultipleRoutes は複数のルートの追加と優先順位をテストします
 func TestMultipleRoutes(t *testing.T) {
-	root := NewNode("")
+	root := newNode("")
 	handler := func(w http.ResponseWriter, r *http.Request) error { return nil }
 
 	// Add multiple routes
@@ -139,7 +139,7 @@ func TestMultipleRoutes(t *testing.T) {
 	}
 
 	for _, route := range routes {
-		if err := root.AddRoute(route, handler); err != nil {
+		if err := root.addRoute(route, handler); err != nil {
 			t.Fatalf("Failed to add route %v: %v", route, err)
 		}
 	}
@@ -161,7 +161,7 @@ func TestMultipleRoutes(t *testing.T) {
 
 	for _, tc := range testCases {
 		params := NewParams()
-		h, matched := root.Match(tc.path, params)
+		h, matched := root.match(tc.path, params)
 
 		if tc.matches {
 			if !matched || h == nil {

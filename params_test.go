@@ -90,7 +90,7 @@ func TestParamsPool(t *testing.T) {
 		PutParams(params)
 	}
 
-	// Get a reused Params from the pool
+	// get a reused Params from the pool
 	params := NewParams()
 
 	// Verify that the reused Params is empty
@@ -131,7 +131,7 @@ func TestContextWithParams(t *testing.T) {
 	ctx := context.Background()
 	ctx = contextWithParams(ctx, params)
 
-	// Get parameters from context
+	// get parameters from context
 	retrievedParams := GetParams(ctx)
 
 	// Check parameters
@@ -161,7 +161,7 @@ func TestGetParamsWithNilContext(t *testing.T) {
 
 // TestGetParamsWithEmptyContext tests retrieving parameters from an empty context
 func TestGetParamsWithEmptyContext(t *testing.T) {
-	// Get parameters from an empty context
+	// get parameters from an empty context
 	ctx := context.Background()
 	params := GetParams(ctx)
 

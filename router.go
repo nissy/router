@@ -13,119 +13,16 @@ import (
 	"time"
 )
 
-// responseWriter is an extension of http.ResponseWriter that tracks the write status of the response.
-type responseWriter struct {
-	http.ResponseWriter
-	written bool
-	status  int
-}
-
-// WriteHeader sets the HTTP status code.
-// It does nothing if the response has already been written.
-func (rw *responseWriter) WriteHeader(code int) {
-	if !rw.written {
-		rw.status = code
-		rw.ResponseWriter.WriteHeader(code)
-		rw.written = true
-	}
-}
-
-// Write writes the response body.
-// Writing is tracked by setting the written flag.
-func (rw *responseWriter) Write(b []byte) (int, error) {
-	if !rw.written {
-		rw.written = true
-	}
-	return rw.ResponseWriter.Write(b)
-}
-
-// Written returns whether the response has already been written.
-func (rw *responseWriter) Written() bool {
-	return rw.written
-}
-
-// Status returns the set HTTP status code.
-func (rw *responseWriter) Status() int {
-	return rw.status
-}
-
-// HandlerFunc is a function type for processing HTTP requests and returning an error.
-// Unlike the standard http.HandlerFunc, it allows returning an error for error handling.
-type HandlerFunc func(http.ResponseWriter, *http.Request) error
-
-// MiddlewareFunc is a function type that takes a handler function and returns a new handler function.
-// It is used to insert common processing before and after request processing.
-type MiddlewareFunc func(HandlerFunc) HandlerFunc
-
-// CleanupMiddleware is an interface for cleanupable middleware.
-type CleanupMiddleware interface {
-	Cleanup() error
-	Middleware() MiddlewareFunc
-}
-
-// cleanupMiddlewareImpl is the implementation of CleanupMiddleware interface.
-type cleanupMiddlewareImpl struct {
-	mw      MiddlewareFunc
-	cleanup func() error
-}
-
-// Cleanup implements the CleanupMiddleware interface.
-func (c *cleanupMiddlewareImpl) Cleanup() error {
-	if c.cleanup != nil {
-		return c.cleanup()
-	}
-	return nil
-}
-
-// Middleware implements the CleanupMiddleware interface.
-func (c *cleanupMiddlewareImpl) Middleware() MiddlewareFunc {
-	return c.mw
-}
-
-// NewCleanupMiddleware creates a new CleanupMiddleware.
-func NewCleanupMiddleware(mw MiddlewareFunc, cleanup func() error) CleanupMiddleware {
-	return &cleanupMiddlewareImpl{
-		mw:      mw,
-		cleanup: cleanup,
-	}
-}
-
-// RouterOptions are options to set up the router's behavior.
-type RouterOptions struct {
-	// AllowRouteOverride specifies how to handle duplicate route registration.
-	// true: The later registered route overwrites the existing route.
-	// false: If a duplicate route is detected, an error is returned (default).
-	AllowRouteOverride bool
-
-	// RequestTimeout is the default timeout time for request processing.
-	// A value of 0 or less disables the timeout.
-	// Default: 0 seconds (no timeout)
-	RequestTimeout time.Duration
-
-	// CacheMaxEntries is the maximum number of entries in the route cache.
-	// Default: 1000
-	CacheMaxEntries int
-}
-
-// DefaultRouterOptions returns the default router options.
-func DefaultRouterOptions() RouterOptions {
-	return RouterOptions{
-		AllowRouteOverride: false,
-		RequestTimeout:     0 * time.Second, // no timeout
-		CacheMaxEntries:    defaultCacheMaxEntries,
-	}
-}
-
 // Router is the main structure for managing HTTP request routing.
-// It supports both static routes (DoubleArrayTrie) and dynamic routes (Radix tree),
+// It supports both static routes (doubleArrayTrie) and dynamic routes (Radix tree),
 // providing high-speed route matching and caching mechanism.
 type Router struct {
 	// Routing-related
-	staticTrie   *DoubleArrayTrie // High-speed trie structure for static routes
-	dynamicNodes [8]*Node         // Radix tree for dynamic routes for each HTTP method (index corresponds to methodToUint8)
-	cache        *Cache           // Cache route matching results for performance
-	routes       []*Route         // Directly registered routes
-	groups       []*Group         // Registered groups
+	static  *doubleArrayTrie // High-speed trie structure for static routes
+	dynamic [8]*node         // Radix tree for dynamic routes for each HTTP method (index corresponds to methodToUint8)
+	cache   *cache           // cache route matching results for performance
+	routes  []*Route         // Directly registered routes
+	groups  []*Group         // Registered groups
 
 	// Handler-related
 	// 各ハンドラーは異なる状況や目的に対応するために個別に存在しています：
@@ -160,6 +57,105 @@ type Router struct {
 	allowRouteOverride bool // Allow duplicate route registration
 }
 
+// HandlerFunc is a function type for processing HTTP requests and returning an error.
+// Unlike the standard http.HandlerFunc, it allows returning an error for error handling.
+type HandlerFunc func(http.ResponseWriter, *http.Request) error
+
+// NewRouter initializes and returns a new Router instance.
+// Initializes the doubleArrayTrie for static routes and the cache, and sets the default error handler.
+func NewRouter() *Router {
+	return NewRouterWithOptions(defaultRouterOptions())
+}
+
+// NewRouterWithOptions initializes and returns a new Router instance with the specified options.
+func NewRouterWithOptions(opts RouterOptions) *Router {
+	// cache size verification
+	cacheMaxEntries := defaultCacheMaxEntries
+	if opts.CacheMaxEntries > 0 {
+		cacheMaxEntries = opts.CacheMaxEntries
+	}
+
+	// Timeout verification
+	requestTimeout := 0 * time.Second // Default no timeout
+	if opts.RequestTimeout >= 0 {
+		requestTimeout = opts.RequestTimeout
+	}
+
+	r := &Router{
+		static:             newDoubleArrayTrie(),
+		cache:              newCacheWithMaxEntries(cacheMaxEntries),
+		errorHandler:       defaultErrorHandler,
+		shutdownHandler:    defaultShutdownHandler,
+		timeoutHandler:     defaultTimeoutHandler,
+		notFoundHandler:    nil,             // Default to nil, will use http.NotFound
+		paramsPool:         newParamsPool(), // Initialize parameter pool
+		routes:             make([]*Route, 0),
+		groups:             make([]*Group, 0),
+		requestTimeout:     requestTimeout,
+		allowRouteOverride: opts.AllowRouteOverride,
+	}
+	// Initialize middleware list (using atomic.Value)
+	r.middleware.Store(make([]MiddlewareFunc, 0, 8))
+	// Initialize cleanupable middleware list
+	r.cleanupMws.Store(make([]cleanupMiddleware, 0, 8))
+	// shuttingDown is default false but explicitly set
+	r.shuttingDown.Store(false)
+
+	// Initialize dynamic route trees for each HTTP method
+	for i := range r.dynamic {
+		r.dynamic[i] = newNode("")
+	}
+
+	return r
+}
+
+// Cleanup implements the CleanupMiddleware interface.
+func (c *cleanupMiddleware) Cleanup() error {
+	if c.cleanup != nil {
+		return c.cleanup()
+	}
+	return nil
+}
+
+// Middleware implements the CleanupMiddleware interface.
+func (c *cleanupMiddleware) Middleware() MiddlewareFunc {
+	return c.mw
+}
+
+// newCleanupMiddleware creates a new CleanupMiddleware.
+func newCleanupMiddleware(mw MiddlewareFunc, cleanup func() error) *cleanupMiddleware {
+	return &cleanupMiddleware{
+		mw:      mw,
+		cleanup: cleanup,
+	}
+}
+
+// RouterOptions are options to set up the router's behavior.
+type RouterOptions struct {
+	// AllowRouteOverride specifies how to handle duplicate route registration.
+	// true: The later registered route overwrites the existing route.
+	// false: If a duplicate route is detected, an error is returned (default).
+	AllowRouteOverride bool
+
+	// RequestTimeout is the default timeout time for request processing.
+	// A value of 0 or less disables the timeout.
+	// Default: 0 seconds (no timeout)
+	RequestTimeout time.Duration
+
+	// CacheMaxEntries is the maximum number of entries in the route cache.
+	// Default: 1000
+	CacheMaxEntries int
+}
+
+// defaultRouterOptions returns the default router options.
+func defaultRouterOptions() RouterOptions {
+	return RouterOptions{
+		AllowRouteOverride: false,
+		RequestTimeout:     0 * time.Second, // no timeout
+		CacheMaxEntries:    defaultCacheMaxEntries,
+	}
+}
+
 // defaultErrorHandler is the default error handler,
 // which returns 500 Internal Server Error.
 func defaultErrorHandler(w http.ResponseWriter, r *http.Request, err error) {
@@ -180,54 +176,6 @@ func defaultTimeoutHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Connection", "close")
 	w.Header().Set("Retry-After", "60") // Recommend retrying after 60 seconds
 	http.Error(w, "Request processing timed out", http.StatusServiceUnavailable)
-}
-
-// NewRouter initializes and returns a new Router instance.
-// Initializes the DoubleArrayTrie for static routes and the cache, and sets the default error handler.
-func NewRouter() *Router {
-	return NewRouterWithOptions(DefaultRouterOptions())
-}
-
-// NewRouterWithOptions initializes and returns a new Router instance with the specified options.
-func NewRouterWithOptions(opts RouterOptions) *Router {
-	// Cache size verification
-	cacheMaxEntries := defaultCacheMaxEntries
-	if opts.CacheMaxEntries > 0 {
-		cacheMaxEntries = opts.CacheMaxEntries
-	}
-
-	// Timeout verification
-	requestTimeout := 0 * time.Second // Default no timeout
-	if opts.RequestTimeout >= 0 {
-		requestTimeout = opts.RequestTimeout
-	}
-
-	r := &Router{
-		staticTrie:         newDoubleArrayTrie(),
-		cache:              NewCache(cacheMaxEntries),
-		errorHandler:       defaultErrorHandler,
-		shutdownHandler:    defaultShutdownHandler,
-		timeoutHandler:     defaultTimeoutHandler,
-		notFoundHandler:    nil,             // Default to nil, will use http.NotFound
-		paramsPool:         NewParamsPool(), // Initialize parameter pool
-		routes:             make([]*Route, 0),
-		groups:             make([]*Group, 0),
-		requestTimeout:     requestTimeout,
-		allowRouteOverride: opts.AllowRouteOverride,
-	}
-	// Initialize middleware list (using atomic.Value)
-	r.middleware.Store(make([]MiddlewareFunc, 0, 8))
-	// Initialize cleanupable middleware list
-	r.cleanupMws.Store(make([]CleanupMiddleware, 0, 8))
-	// shuttingDown is default false but explicitly set
-	r.shuttingDown.Store(false)
-
-	// Initialize dynamic route trees for each HTTP method
-	for i := range r.dynamicNodes {
-		r.dynamicNodes[i] = NewNode("")
-	}
-
-	return r
 }
 
 // SetErrorHandler sets a custom error handler.
@@ -269,50 +217,6 @@ func (r *Router) SetNotFoundHandler(h http.HandlerFunc) {
 	r.notFoundHandler = h
 }
 
-// Use adds one or more middleware functions to the router.
-// Middleware functions are executed before all route handlers, allowing for common processing such as authentication and logging.
-func (r *Router) Use(mw ...MiddlewareFunc) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	// Get current middleware list
-	currentMiddleware := r.middleware.Load().([]MiddlewareFunc)
-
-	// Create new middleware list (existing + new)
-	newMiddleware := make([]MiddlewareFunc, len(currentMiddleware)+len(mw))
-	copy(newMiddleware, currentMiddleware)
-	copy(newMiddleware[len(currentMiddleware):], mw)
-
-	// Atomic update
-	r.middleware.Store(newMiddleware)
-}
-
-// AddCleanupMiddleware adds a cleanupable middleware to the router.
-// This middleware is cleaned up when the Shutdown method is called.
-func (r *Router) AddCleanupMiddleware(cm CleanupMiddleware) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	// Get current middleware list
-	currentMiddleware := r.middleware.Load().([]MiddlewareFunc)
-
-	// Create new middleware list (existing + new)
-	newMiddleware := make([]MiddlewareFunc, len(currentMiddleware)+1)
-	copy(newMiddleware, currentMiddleware)
-	newMiddleware[len(currentMiddleware)] = cm.Middleware()
-
-	// Atomic update
-	r.middleware.Store(newMiddleware)
-
-	// Add to cleanup list
-	currentCleanup := r.cleanupMws.Load().([]CleanupMiddleware)
-	newCleanup := make([]CleanupMiddleware, len(currentCleanup)+1)
-	copy(newCleanup, currentCleanup)
-	newCleanup[len(currentCleanup)] = cm
-
-	r.cleanupMws.Store(newCleanup)
-}
-
 // ServeHTTP handles HTTP requests.
 // It performs route matching, calls the appropriate handler,
 // builds the middleware chain, and handles errors.
@@ -351,12 +255,12 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	// Set processing time limit
+	// set processing time limit
 	ctx := req.Context()
 
 	// Apply the configured timeout if no existing deadline
 	if _, ok := ctx.Deadline(); !ok {
-		// Get timeout setting (use route-specific setting if available)
+		// get timeout setting (use route-specific setting if available)
 		var timeout time.Duration
 		if route != nil {
 			timeout = route.GetTimeout()
@@ -384,7 +288,7 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 						timeoutOccurred.Store(true)
 
 						// Process only if response hasn't been written yet
-						if !rw.Written() {
+						if !rw.written {
 							r.mu.RLock()
 							timeoutHandler := r.timeoutHandler
 							r.mu.RUnlock()
@@ -426,7 +330,7 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		r.activeRequests.Done() // Call Done without mutex
 	}()
 
-	// Get URL parameters
+	// get URL parameters
 	params, paramsFound := r.cache.GetParams(generateRouteKey(methodToUint8(req.Method), normalizePath(req.URL.Path)))
 	if paramsFound && len(params) > 0 {
 		// If parameters could be retrieved from cache
@@ -451,12 +355,12 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		}
 
 		// Process only if response hasn't been written yet
-		if !rw.Written() {
+		if !rw.written {
 			// Handle panic in error handler
 			defer func() {
 				if r := recover(); r != nil {
 					log.Printf("Error handler panic: %v", r)
-					if !rw.Written() {
+					if !rw.written {
 						http.Error(rw, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 					}
 				}
@@ -501,25 +405,25 @@ func (r *Router) findHandlerAndRoute(method, path string) (HandlerFunc, *Route, 
 	key := generateRouteKey(methodIndex, path)
 
 	// Check cache
-	if handler, found := r.cache.Get(key); found {
-		// Cache hit
+	if handler, found := r.cache.get(key); found {
+		// cache hit
 		return handler, nil, true
 	}
 
-	// Search static route
-	if handler := r.staticTrie.Search(path); handler != nil {
+	// search static route
+	if handler := r.static.search(path); handler != nil {
 		// If static route is found, add to cache
-		r.cache.Set(key, handler, nil)
+		r.cache.set(key, handler, nil)
 		return handler, nil, true
 	}
 
-	// Search dynamic route
+	// search dynamic route
 	nodeIndex := methodIndex - 1
-	node := r.dynamicNodes[nodeIndex]
+	node := r.dynamic[nodeIndex]
 	if node != nil {
-		// Get parameter object from pool
+		// get parameter object from pool
 		params := r.paramsPool.Get()
-		handler, matched := node.Match(path, params)
+		handler, matched := node.match(path, params)
 		if matched && handler != nil {
 			// If dynamic route is found, add to cache
 			// Convert parameters to map
@@ -528,7 +432,7 @@ func (r *Router) findHandlerAndRoute(method, path string) (HandlerFunc, *Route, 
 				key, val := params.data[i].key, params.data[i].value
 				paramsMap[key] = val
 			}
-			r.cache.Set(key, handler, paramsMap)
+			r.cache.set(key, handler, paramsMap)
 
 			// Return parameter object to pool
 			r.paramsPool.Put(params)
@@ -542,7 +446,7 @@ func (r *Router) findHandlerAndRoute(method, path string) (HandlerFunc, *Route, 
 	return nil, nil, false
 }
 
-// Handle registers a new route. If the pattern is static, it registers in DoubleArrayTrie,
+// Handle registers a new route. If the pattern is static, it registers in doubleArrayTrie,
 // if it contains dynamic parameters, it registers in Radix tree.
 // It also validates the pattern, HTTP method, and handler function.
 // If static routes and dynamic routes conflict, static routes take precedence.
@@ -581,22 +485,22 @@ func (r *Router) Handle(method, pattern string, h HandlerFunc) error {
 	// Static route case
 	if isStatic {
 		// Duplicate check for static route
-		existingHandler := r.staticTrie.Search(pattern)
+		existingHandler := r.static.search(pattern)
 		if existingHandler != nil {
 			// If duplicate is found
 			if !r.allowRouteOverride {
 				return &RouterError{Code: ErrInvalidPattern, Message: "duplicate static route: " + pattern}
 			}
 			// If overwrite mode, overwrite existing route
-			return r.staticTrie.Add(pattern, h)
+			return r.static.Add(pattern, h)
 		}
 
 		// Dynamic route and static route conflict check
 		nodeIndex := methodIndex - 1
-		node := r.dynamicNodes[nodeIndex]
+		node := r.dynamic[nodeIndex]
 		if node != nil {
 			params := NewParams()
-			existingHandler, matched := node.Match(pattern, params)
+			existingHandler, matched := node.match(pattern, params)
 			PutParams(params) // Return parameter object to pool
 
 			// If dynamic route already exists
@@ -609,12 +513,12 @@ func (r *Router) Handle(method, pattern string, h HandlerFunc) error {
 		}
 
 		// Register new static route
-		return r.staticTrie.Add(pattern, h)
+		return r.static.Add(pattern, h)
 	}
 
 	// Dynamic route case
 	// Static route and dynamic route conflict check
-	existingHandler := r.staticTrie.Search(pattern)
+	existingHandler := r.static.search(pattern)
 	if existingHandler != nil {
 		// If static route already exists
 		if !r.allowRouteOverride {
@@ -626,21 +530,21 @@ func (r *Router) Handle(method, pattern string, h HandlerFunc) error {
 
 	// Register dynamic route
 	nodeIndex := methodIndex - 1
-	node := r.dynamicNodes[nodeIndex]
+	node := r.dynamic[nodeIndex]
 	if node == nil {
 		// Initialize dynamic route tree for this HTTP method
-		node = NewNode("")
-		r.dynamicNodes[nodeIndex] = node
+		node = newNode("")
+		r.dynamic[nodeIndex] = node
 	}
 
 	// Check existing dynamic route
 	if r.allowRouteOverride {
 		// If overwrite mode, remove existing route before adding
-		node.RemoveRoute(segments)
+		node.removeRoute(segments)
 	}
 
 	// Add route
-	if err := node.AddRoute(segments, h); err != nil {
+	if err := node.addRoute(segments, h); err != nil {
 		return err
 	}
 
@@ -701,7 +605,7 @@ func generateRouteKey(method uint8, path string) uint64 {
 
 // methodToUint8 converts the HTTP method string to its internal numeric representation.
 // It assigns values 1-7 to each method and returns 0 for unsupported methods.
-// This value is used as the index in the dynamicNodes array.
+// This value is used as the index in the dynamic array.
 func methodToUint8(m string) uint8 {
 	switch m {
 	case http.MethodGet:
@@ -733,14 +637,14 @@ func contextWithParams(ctx context.Context, ps *Params) context.Context {
 // It stops accepting new requests and waits for existing requests to complete.
 // If the specified context is canceled, it stops waiting and returns an error.
 func (r *Router) Shutdown(ctx context.Context) error {
-	// Set shuttingDown flag
+	// set shuttingDown flag
 	r.shuttingDown.Store(true)
 
-	// Stop cache cleanup loop
-	r.cache.Stop()
+	// stop cache cleanup loop
+	r.cache.stop()
 
 	// Clean up cleanupable middleware
-	cleanupMws := r.cleanupMws.Load().([]CleanupMiddleware)
+	cleanupMws := r.cleanupMws.Load().([]cleanupMiddleware)
 	for _, cm := range cleanupMws {
 		if err := cm.Cleanup(); err != nil {
 			return err
@@ -763,9 +667,9 @@ func (r *Router) Shutdown(ctx context.Context) error {
 	}
 }
 
-// ShutdownWithTimeoutContext gracefully shuts down the router with a timeout.
+// shutdownWithTimeoutContext gracefully shuts down the router with a timeout.
 // It returns an error if all requests do not complete within the specified time.
-func (r *Router) ShutdownWithTimeoutContext(timeout time.Duration) error {
+func (r *Router) shutdownWithTimeoutContext(timeout time.Duration) error {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	return r.Shutdown(ctx)
@@ -779,7 +683,7 @@ func (r *Router) MustHandle(method, pattern string, h HandlerFunc) {
 	}
 }
 
-// Route registers a new route. If the pattern is static, it registers in DoubleArrayTrie,
+// Route registers a new route. If the pattern is static, it registers in doubleArrayTrie,
 // if it contains dynamic parameters, it registers in Radix tree.
 // It also validates the pattern, HTTP method, and handler function.
 // If static routes and dynamic routes conflict, static routes take precedence.
@@ -790,14 +694,14 @@ func (r *Router) Route(method, pattern string, h HandlerFunc, middleware ...Midd
 
 	route := &Route{
 		group:        nil, // Directly registered routes do not belong to a group
-		router:       r,   // Set reference to router
+		router:       r,   // set reference to router
 		method:       method,
 		subPath:      pattern,
 		handler:      h,
 		middleware:   make([]MiddlewareFunc, 0, len(middleware)),
 		applied:      false,
 		timeout:      0,
-		errorHandler: nil, // Set to nil (use default value of router)
+		errorHandler: nil, // set to nil (use default value of router)
 	}
 
 	// Add middleware

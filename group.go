@@ -207,39 +207,6 @@ func (g *Group) Route(method, subPath string, h HandlerFunc, middleware ...Middl
 	return route
 }
 
-// Build registers all routes in the group.
-// This method must be explicitly called.
-// If duplicate routes are detected, an error is returned.
-// Note: This method is usually called from Router.Build.
-func (g *Group) Build() error {
-	// Local duplicate check map (only check within group)
-	routeMap := make(map[string]struct{})
-
-	for _, route := range g.routes {
-		if route.applied {
-			continue
-		}
-
-		// Calculate full path
-		fullPath := joinPath(g.prefix, route.subPath)
-
-		// Local duplicate check
-		routeKey := route.method + ":" + fullPath
-		if _, exists := routeMap[routeKey]; exists {
-			return &RouterError{
-				Code:    ErrInvalidPattern,
-				Message: "duplicate route definition in group: " + route.method + " " + fullPath,
-			}
-		}
-		routeMap[routeKey] = struct{}{}
-
-		if err := route.build(); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
 // Get creates a GET route.
 // You can call WithMiddleware on the returned Route object to apply specific middleware.
 func (g *Group) Get(subPath string, h HandlerFunc, middleware ...MiddlewareFunc) *Route {
@@ -344,7 +311,7 @@ func (r *Route) WithTimeout(timeout time.Duration) *Route {
 		return r
 	}
 
-	// Set timeout
+	// set timeout
 	r.timeout = timeout
 
 	return r
@@ -367,7 +334,7 @@ func (r *Route) WithErrorHandler(handler func(http.ResponseWriter, *http.Request
 		return r
 	}
 
-	// Set error handler
+	// set error handler
 	r.errorHandler = handler
 
 	return r

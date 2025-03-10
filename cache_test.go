@@ -26,27 +26,27 @@ func TestCacheCreation(t *testing.T) {
 		}
 	}
 
-	// Stop the cache
-	cache.Stop()
+	// stop the cache
+	cache.stop()
 }
 
 // TestCacheSetAndGet tests setting and getting from the cache
 func TestCacheSetAndGet(t *testing.T) {
 	// Create a new cache
 	cache := newCache()
-	defer cache.Stop()
+	defer cache.stop()
 
 	// Test handler function
 	handler := func(w http.ResponseWriter, r *http.Request) error {
 		return nil
 	}
 
-	// Set an entry in the cache
+	// set an entry in the cache
 	key := uint64(12345)
-	cache.Set(key, handler, nil)
+	cache.set(key, handler, nil)
 
-	// Get the entry from the cache
-	h, found := cache.Get(key)
+	// get the entry from the cache
+	h, found := cache.get(key)
 
 	// Check the result
 	if !found {
@@ -62,7 +62,7 @@ func TestCacheSetAndGet(t *testing.T) {
 func TestCacheWithParams(t *testing.T) {
 	// Create a new cache
 	cache := newCache()
-	defer cache.Stop()
+	defer cache.stop()
 
 	// Test handler function
 	handler := func(w http.ResponseWriter, r *http.Request) error {
@@ -75,12 +75,12 @@ func TestCacheWithParams(t *testing.T) {
 		"name": "test",
 	}
 
-	// Set an entry in the cache
+	// set an entry in the cache
 	key := uint64(12345)
-	cache.Set(key, handler, params)
+	cache.set(key, handler, params)
 
-	// Get the entry from the cache
-	h, p, found := cache.GetWithParams(key)
+	// get the entry from the cache
+	h, p, found := cache.getWithParams(key)
 
 	// Check the result
 	if !found {
@@ -109,18 +109,18 @@ func TestCacheWithParams(t *testing.T) {
 func TestCacheMaxEntries(t *testing.T) {
 	// Create a new cache
 	cache := newCache()
-	defer cache.Stop()
+	defer cache.stop()
 
 	// Test handler function
 	handler := func(w http.ResponseWriter, r *http.Request) error {
 		return nil
 	}
 
-	// Set entries exceeding the maximum number
+	// set entries exceeding the maximum number
 	shardIndex := uint64(0) // Concentrate entries in a specific shard
 	for i := uint64(0); i < maxEntriesPerShard+10; i++ {
 		key := (i << 3) | shardIndex // Fix shard index
-		cache.Set(key, handler, nil)
+		cache.set(key, handler, nil)
 	}
 
 	// Check the number of entries in the shard
@@ -138,18 +138,18 @@ func TestCacheMaxEntries(t *testing.T) {
 func TestCacheCleanup(t *testing.T) {
 	// Create a new cache
 	cache := newCache()
-	defer cache.Stop()
+	defer cache.stop()
 
 	// Test handler function
 	handler := func(w http.ResponseWriter, r *http.Request) error {
 		return nil
 	}
 
-	// Set an entry in the cache
+	// set an entry in the cache
 	key := uint64(12345)
-	cache.Set(key, handler, nil)
+	cache.set(key, handler, nil)
 
-	// Set the entry's timestamp to the past
+	// set the entry's timestamp to the past
 	shard := cache.shards[key&shardMask]
 	shard.Lock()
 	entry := shard.entries[key]
@@ -162,7 +162,7 @@ func TestCacheCleanup(t *testing.T) {
 	cache.cleanup()
 
 	// Verify that the entry has been removed
-	_, found := cache.Get(key)
+	_, found := cache.get(key)
 	if found {
 		t.Errorf("Expired entry was not cleaned up")
 	}
@@ -172,20 +172,20 @@ func TestCacheCleanup(t *testing.T) {
 func TestCacheHits(t *testing.T) {
 	// Create a new cache
 	cache := newCache()
-	defer cache.Stop()
+	defer cache.stop()
 
 	// Test handler function
 	handler := func(w http.ResponseWriter, r *http.Request) error {
 		return nil
 	}
 
-	// Set an entry in the cache
+	// set an entry in the cache
 	key := uint64(12345)
-	cache.Set(key, handler, nil)
+	cache.set(key, handler, nil)
 
-	// Get the entry from the cache multiple times
+	// get the entry from the cache multiple times
 	for i := 0; i < 5; i++ {
-		h, found := cache.Get(key)
+		h, found := cache.get(key)
 		if !found || h == nil {
 			t.Fatalf("Entry not found in cache")
 		}
@@ -198,18 +198,18 @@ func TestCacheHits(t *testing.T) {
 func TestCacheTimestamp(t *testing.T) {
 	// Create a new cache
 	cache := newCache()
-	defer cache.Stop()
+	defer cache.stop()
 
 	// Test handler function
 	handler := func(w http.ResponseWriter, r *http.Request) error {
 		return nil
 	}
 
-	// Set an entry in the cache
+	// set an entry in the cache
 	key := uint64(12345)
-	cache.Set(key, handler, nil)
+	cache.set(key, handler, nil)
 
-	// Get the initial timestamp
+	// get the initial timestamp
 	shard := cache.shards[key&shardMask]
 	shard.RLock()
 	entry := shard.entries[key]
@@ -222,10 +222,10 @@ func TestCacheTimestamp(t *testing.T) {
 	// Wait a bit
 	time.Sleep(10 * time.Millisecond)
 
-	// Get the entry from the cache
-	cache.Get(key)
+	// get the entry from the cache
+	cache.get(key)
 
-	// Get the final timestamp
+	// get the final timestamp
 	shard.RLock()
 	entry = shard.entries[key]
 	finalTimestamp := int64(0)
@@ -236,6 +236,6 @@ func TestCacheTimestamp(t *testing.T) {
 
 	// Verify that the timestamp has been updated
 	if finalTimestamp <= initialTimestamp {
-		t.Errorf("Cache timestamp was not updated. Initial: %d, Final: %d", initialTimestamp, finalTimestamp)
+		t.Errorf("cache timestamp was not updated. Initial: %d, Final: %d", initialTimestamp, finalTimestamp)
 	}
 }

@@ -15,7 +15,7 @@ const (
 	defaultCacheMaxEntries = maxEntriesPerShard * shardCount
 )
 
-type Cache struct {
+type cache struct {
 	shards     [shardCount]*cacheShard
 	cleaning   int32
 	stopChan   chan struct{}
@@ -37,8 +37,8 @@ type cacheEntry struct {
 
 // NewCache creates a new cache.
 // maxEntries is the maximum number of entries that can be stored in the cache.
-func NewCache(maxEntries int) *Cache {
-	c := &Cache{
+func newCacheWithMaxEntries(maxEntries int) *cache {
+	c := &cache{
 		stopChan:   make(chan struct{}),
 		maxEntries: maxEntries,
 	}
@@ -52,16 +52,16 @@ func NewCache(maxEntries int) *Cache {
 }
 
 // Function kept for backward compatibility
-func newCache() *Cache {
-	return NewCache(defaultCacheMaxEntries)
+func newCache() *cache {
+	return newCacheWithMaxEntries(defaultCacheMaxEntries)
 }
 
-func (c *Cache) Get(key uint64) (HandlerFunc, bool) {
-	handler, _, found := c.GetWithParams(key)
+func (c *cache) get(key uint64) (HandlerFunc, bool) {
+	handler, _, found := c.getWithParams(key)
 	return handler, found
 }
 
-func (c *Cache) Set(key uint64, h HandlerFunc, params map[string]string) {
+func (c *cache) set(key uint64, h HandlerFunc, params map[string]string) {
 	if h == nil {
 		return
 	}
@@ -88,7 +88,7 @@ func (c *Cache) Set(key uint64, h HandlerFunc, params map[string]string) {
 	sh.Unlock()
 }
 
-func (c *Cache) GetWithParams(key uint64) (HandlerFunc, map[string]string, bool) {
+func (c *cache) getWithParams(key uint64) (HandlerFunc, map[string]string, bool) {
 	sh := c.shards[key&shardMask]
 	sh.RLock()
 	e, ok := sh.entries[key]
@@ -101,7 +101,7 @@ func (c *Cache) GetWithParams(key uint64) (HandlerFunc, map[string]string, bool)
 	return e.handler, e.params, true
 }
 
-func (c *Cache) cleanupLoop() {
+func (c *cache) cleanupLoop() {
 	ticker := time.NewTicker(defaultCleanupInterval)
 	defer ticker.Stop()
 	for {
@@ -114,7 +114,7 @@ func (c *Cache) cleanupLoop() {
 	}
 }
 
-func (c *Cache) cleanup() {
+func (c *cache) cleanup() {
 	if !atomic.CompareAndSwapInt32(&c.cleaning, 0, 1) {
 		return
 	}
@@ -132,16 +132,16 @@ func (c *Cache) cleanup() {
 	}
 }
 
-// Stop stops the cache cleanup loop.
+// stop stops the cache cleanup loop.
 // This should be called during testing or shutdown.
 // This method is safe to call multiple times.
-func (c *Cache) Stop() {
+func (c *cache) stop() {
 	// Do nothing if already stopped
 	if c.stopped.Load() {
 		return
 	}
 
-	// Set the stopped flag
+	// set the stopped flag
 	if c.stopped.CompareAndSwap(false, true) {
 		// Close stopChan (only once)
 		close(c.stopChan)
@@ -149,7 +149,7 @@ func (c *Cache) Stop() {
 }
 
 // GetParams retrieves only the parameters from the cache.
-func (c *Cache) GetParams(key uint64) (map[string]string, bool) {
-	_, params, found := c.GetWithParams(key)
+func (c *cache) GetParams(key uint64) (map[string]string, bool) {
+	_, params, found := c.getWithParams(key)
 	return params, found
 }

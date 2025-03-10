@@ -15,24 +15,24 @@ const (
 	regexSegment                     // Regular expression segment ({name:pattern} format)
 )
 
-// Node represents a segment of a URL path.
+// node represents a segment of a URL path.
 // It forms a Radix tree structure and is used
 // to efficiently manage route matching.
-type Node struct {
+type node struct {
 	segment     string         // Path segment this node represents
 	handler     HandlerFunc    // Handler function associated with this node
-	children    []*Node        // List of child nodes
+	children    []*node        // List of child nodes
 	segmentType segmentType    // Segment type (static, parameter, regular expression)
 	regex       *regexp.Regexp // Regular expression pattern (used only when segType is regex)
 }
 
-// NewNode creates and returns a new node.
+// newNode creates and returns a new node.
 // It parses the pattern and sets the appropriate segment type.
 // It will panic if the regular expression pattern is invalid.
-func NewNode(pattern string) *Node {
-	n := &Node{
+func newNode(pattern string) *node {
+	n := &node{
 		segment:  pattern,
-		children: make([]*Node, 0, 8), // Set initial capacity to 8 (sufficient for common cases)
+		children: make([]*node, 0, 8), // set initial capacity to 8 (sufficient for common cases)
 	}
 	if err := n.parseSegment(); err != nil {
 		panic(err)
@@ -40,19 +40,19 @@ func NewNode(pattern string) *Node {
 	return n
 }
 
-// AddRoute adds a route pattern and handler to the tree.
+// addRoute adds a route pattern and handler to the tree.
 // It processes path segments in order and creates new nodes as needed.
 // Duplicate registration for the same path pattern results in an error.
 // Different parameter names for the same path pattern (e.g., /users/{id} and /users/{name}) also result in an error.
 // Conflicts in regular expression patterns are allowed and prioritized by registration order.
 // Using the same parameter name multiple times in the same route (e.g., /users/{id}/posts/{id}) also results in an error.
-func (n *Node) AddRoute(segments []string, handler HandlerFunc) error {
+func (n *node) addRoute(segments []string, handler HandlerFunc) error {
 	// Map for checking duplicate parameter names
 	return n.addRouteWithParamCheck(segments, handler, make(map[string]struct{}))
 }
 
 // addRouteWithParamCheck performs the actual route addition and checks for duplicate parameter names.
-func (n *Node) addRouteWithParamCheck(segments []string, handler HandlerFunc, usedParams map[string]struct{}) error {
+func (n *node) addRouteWithParamCheck(segments []string, handler HandlerFunc, usedParams map[string]struct{}) error {
 	// If all segments have been processed, set the handler for the current node
 	if len(segments) == 0 {
 		if n.handler != nil {
@@ -62,7 +62,7 @@ func (n *Node) addRouteWithParamCheck(segments []string, handler HandlerFunc, us
 		return nil
 	}
 
-	// Get the current segment
+	// get the current segment
 	currentSegment := segments[0]
 
 	// If it's a parameter segment, check for duplicate parameter names
@@ -78,13 +78,13 @@ func (n *Node) addRouteWithParamCheck(segments []string, handler HandlerFunc, us
 		usedParams[paramName] = struct{}{}
 	}
 
-	// Search for existing child nodes
+	// search for existing child nodes
 	child := n.findChild(currentSegment)
 
 	// If a child node exists, check the segment type
 	if child != nil {
 		// Create a temporary node to get the segment type
-		tempNode := NewNode(currentSegment)
+		tempNode := newNode(currentSegment)
 
 		// If the segment types are the same but the patterns are different, it's an error
 		// Example: /users/{id} and /users/{name} conflict
@@ -115,7 +115,7 @@ func (n *Node) addRouteWithParamCheck(segments []string, handler HandlerFunc, us
 	}
 
 	// If no child node exists, create a new one
-	child = NewNode(currentSegment)
+	child = newNode(currentSegment)
 	n.children = append(n.children, child)
 
 	// Recursively process the remaining segments
@@ -138,10 +138,10 @@ func extractParamName(pattern string) string {
 	return pattern[1 : len(pattern)-1]
 }
 
-// Match checks if the path matches this node or any of its child nodes.
+// match checks if the path matches this node or any of its child nodes.
 // If it matches, it returns the handler function and true; if it doesn't, it returns nil and false.
 // If parameters are extracted, they are added to params.
-func (n *Node) Match(path string, params *Params) (HandlerFunc, bool) {
+func (n *node) match(path string, params *Params) (HandlerFunc, bool) {
 	// If the path is empty, return the handler for the current node
 	if path == "" || path == "/" {
 		return n.handler, true
@@ -168,9 +168,9 @@ func (n *Node) Match(path string, params *Params) (HandlerFunc, bool) {
 	}
 
 	// Classify child nodes
-	var staticMatches []*Node
-	var paramMatches []*Node
-	var regexMatches []*Node
+	var staticMatches []*node
+	var paramMatches []*node
+	var regexMatches []*node
 
 	// Classify child nodes in one loop
 	for _, child := range n.children {
@@ -183,21 +183,21 @@ func (n *Node) Match(path string, params *Params) (HandlerFunc, bool) {
 		}
 	}
 
-	// Match static segments first
+	// match static segments first
 	for _, child := range staticMatches {
-		handler, matched := child.Match(remainingPath, params)
+		handler, matched := child.match(remainingPath, params)
 		if matched {
 			return handler, true
 		}
 	}
 
-	// Match parameter segments
+	// match parameter segments
 	for _, child := range paramMatches {
 		// Extract parameter name
 		paramName := extractParamName(child.segment)
 		// Add parameter
 		params.Add(paramName, currentSegment)
-		handler, matched := child.Match(remainingPath, params)
+		handler, matched := child.match(remainingPath, params)
 		if matched {
 			return handler, true
 		}
@@ -205,13 +205,13 @@ func (n *Node) Match(path string, params *Params) (HandlerFunc, bool) {
 		// Current implementation does not remove, uses overwrite method
 	}
 
-	// Match regular expression segments
+	// match regular expression segments
 	for _, child := range regexMatches {
 		// Extract parameter name
 		paramName := extractParamName(child.segment)
 		// Add parameter
 		params.Add(paramName, currentSegment)
-		handler, matched := child.Match(remainingPath, params)
+		handler, matched := child.match(remainingPath, params)
 		if matched {
 			return handler, true
 		}
@@ -226,7 +226,7 @@ func (n *Node) Match(path string, params *Params) (HandlerFunc, bool) {
 // parseSegment parses the pattern string and determines the segment type.
 // It also compiles the regexp pattern if it's a regular expression segment.
 // It returns an error if the regular expression pattern is invalid.
-func (n *Node) parseSegment() error {
+func (n *node) parseSegment() error {
 	pattern := n.segment
 
 	// Empty pattern is a static segment
@@ -277,7 +277,7 @@ func (n *Node) parseSegment() error {
 // findChild searches for a child node that matches the given pattern.
 // It returns the node if a fully matching child node exists; otherwise, it returns nil.
 // If there are many child nodes, a map is used for faster lookup.
-func (n *Node) findChild(pattern string) *Node {
+func (n *node) findChild(pattern string) *node {
 	// If there are few child nodes, linear search (most common case)
 	if len(n.children) < 8 {
 		for _, child := range n.children {
@@ -289,7 +289,7 @@ func (n *Node) findChild(pattern string) *Node {
 	}
 
 	// If there are many child nodes, use a map for faster lookup
-	childMap := make(map[string]*Node, len(n.children))
+	childMap := make(map[string]*node, len(n.children))
 	for _, child := range n.children {
 		childMap[child.segment] = child
 	}
@@ -297,15 +297,15 @@ func (n *Node) findChild(pattern string) *Node {
 	return childMap[pattern]
 }
 
-// RemoveRoute removes the route that matches the specified segment path.
+// removeRoute removes the route that matches the specified segment path.
 // It returns true if the removed route existed; otherwise, it returns false.
-func (n *Node) RemoveRoute(segments []string) bool {
+func (n *node) removeRoute(segments []string) bool {
 	return n.removeRouteInternal(segments, 0, make(map[string]struct{}))
 }
 
-// removeRouteInternal is the internal implementation of RemoveRoute.
+// removeRouteInternal is the internal implementation of removeRoute.
 // It recursively processes segments and removes matching routes.
-func (n *Node) removeRouteInternal(segments []string, index int, paramNames map[string]struct{}) bool {
+func (n *node) removeRouteInternal(segments []string, index int, paramNames map[string]struct{}) bool {
 	// If the last segment is reached
 	if index >= len(segments) {
 		// If a handler exists, remove it and return true
@@ -318,7 +318,7 @@ func (n *Node) removeRouteInternal(segments []string, index int, paramNames map[
 
 	segment := segments[index]
 
-	// Search for child nodes
+	// search for child nodes
 	for i, child := range n.children {
 		// If it's a static segment, check for full match
 		if child.segmentType == staticSegment && child.segment == segment {
