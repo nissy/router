@@ -128,9 +128,16 @@ type Router struct {
 	groups       []*Group         // Registered groups
 
 	// Handler-related
+	// 各ハンドラーは異なる状況や目的に対応するために個別に存在しています：
+	// - errorHandler: ルートハンドラー内で発生したエラーを処理します（アプリケーションロジックのエラー）
+	// - shutdownHandler: サーバーがシャットダウン中の場合のリクエスト処理を担当します
+	// - timeoutHandler: リクエスト処理がタイムアウトした場合の処理を担当します
+	// - notFoundHandler: 存在しないルートへのリクエストを処理します
+	// これらを分離することで、各状況に応じた適切な処理を個別に定義でき、コードの保守性と拡張性が向上します。
 	errorHandler    func(http.ResponseWriter, *http.Request, error) // Error handling function
 	shutdownHandler http.HandlerFunc                                // Request processing function during shutdown
 	timeoutHandler  http.HandlerFunc                                // Timeout handling function
+	notFoundHandler http.HandlerFunc                                // Not found handler
 
 	// Middleware-related
 	middleware atomic.Value // List of middleware functions (atomic.Value used for thread-safe updates)
@@ -201,6 +208,7 @@ func NewRouterWithOptions(opts RouterOptions) *Router {
 		errorHandler:       defaultErrorHandler,
 		shutdownHandler:    defaultShutdownHandler,
 		timeoutHandler:     defaultTimeoutHandler,
+		notFoundHandler:    nil,             // Default to nil, will use http.NotFound
 		paramsPool:         NewParamsPool(), // Initialize parameter pool
 		routes:             make([]*Route, 0),
 		groups:             make([]*Group, 0),
@@ -224,6 +232,8 @@ func NewRouterWithOptions(opts RouterOptions) *Router {
 
 // SetErrorHandler sets a custom error handler.
 // This allows implementing application-specific error handling.
+// errorHandlerはルートハンドラー内で発生したエラーを処理するための関数です。
+// アプリケーションロジックのエラーに対して適切な対応を定義できます。
 func (r *Router) SetErrorHandler(h func(http.ResponseWriter, *http.Request, error)) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -232,6 +242,8 @@ func (r *Router) SetErrorHandler(h func(http.ResponseWriter, *http.Request, erro
 
 // SetShutdownHandler sets a custom shutdown handler.
 // This allows customizing request processing during shutdown.
+// shutdownHandlerはサーバーがシャットダウン中の場合のリクエスト処理を担当します。
+// サーバーの終了処理中に新しいリクエストが来た場合の特殊な対応を定義できます。
 func (r *Router) SetShutdownHandler(h http.HandlerFunc) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -239,10 +251,22 @@ func (r *Router) SetShutdownHandler(h http.HandlerFunc) {
 }
 
 // SetTimeoutHandler sets the timeout handling function.
+// timeoutHandlerはリクエスト処理がタイムアウトした場合の処理を担当します。
+// 処理時間が長すぎるリクエストに対する特殊な対応を定義できます。
 func (r *Router) SetTimeoutHandler(h http.HandlerFunc) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.timeoutHandler = h
+}
+
+// SetNotFoundHandler sets a custom handler for routes that are not found.
+// This allows customizing the 404 Not Found response.
+// notFoundHandlerは存在しないルートへのリクエストを処理します。
+// ルーティングの段階で一致するルートが見つからない場合の対応を定義できます。
+func (r *Router) SetNotFoundHandler(h http.HandlerFunc) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.notFoundHandler = h
 }
 
 // Use adds one or more middleware functions to the router.
@@ -314,8 +338,16 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	// Find handler and route
 	handler, route, found := r.findHandlerAndRoute(req.Method, req.URL.Path)
 	if !found {
-		// 404 handling
-		http.NotFound(rw, req)
+		// 404 handling with custom handler if set
+		r.mu.RLock()
+		notFoundHandler := r.notFoundHandler
+		r.mu.RUnlock()
+
+		if notFoundHandler != nil {
+			notFoundHandler(rw, req)
+		} else {
+			http.NotFound(rw, req)
+		}
 		return
 	}
 
